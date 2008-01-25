@@ -29,6 +29,7 @@
 #include <stdio.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <stdlib.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <errno.h>
@@ -41,6 +42,8 @@
 #include <time.h>
 #include <regex.h>
 #include <fnmatch.h>
+#include <signal.h>
+#include <pthread.h>
 
 #ifndef linux
 #define __BYTE_ORDER BYTE_ORDER
@@ -50,12 +53,9 @@
 #include <endian.h>
 #endif
 
-#include <squashfs_fs.h>
+#include "squashfs_fs.h"
 #include "read_fs.h"
 #include "global.h"
-
-#include <stdlib.h>
-#include <time.h>
 
 #ifdef SQUASHFS_TRACE
 #define TRACE(s, args...)		do { \
@@ -73,6 +73,8 @@
 						fprintf(stderr, "FATAL ERROR aborting: "s, ## args); \
 						exit(1); \
 					} while(0)
+
+#define CALCULATE_HASH(start)	(start & 0xffff)
 
 struct hash_table_entry {
 	int	start;
@@ -112,6 +114,61 @@ struct test {
 	int position;
 	char mode;
 };
+
+
+/* data cache status struct.  Caches are used to keep
+  track of memory buffers passed between different threads */
+struct cache {
+	int	max_buffers;
+	int	count;
+	int	buffer_size;
+	int	wait_free;
+	int	wait_pending;
+	pthread_mutex_t	mutex;
+	pthread_cond_t wait_for_free;
+	pthread_cond_t wait_for_pending;
+	struct cache_entry *free_list;
+	struct cache_entry *hash_table[65536];
+};
+
+/* struct describing a memory buffer passed between threads */
+struct cache_entry {
+	struct cache *cache;
+	long long block;
+	int	size;
+	int	used;
+	int	pending;
+	struct cache_entry *hash_next;
+	struct cache_entry *hash_prev;
+	struct cache_entry *free_next;
+	struct cache_entry *free_prev;
+	char *read_buffer;
+	char *compress_buffer;
+};
+
+/* struct describing queues used to pass data between threads */
+struct queue {
+	int	size;
+	int	readp;
+	int	writep;
+	pthread_mutex_t	mutex;
+	pthread_cond_t empty;
+	pthread_cond_t full;
+	void **data;
+};
+
+struct cache *fragment_buffer, *data_buffer;
+struct queue *to_reader, *to_deflate, *to_writer, *from_writer;
+pthread_t *thread, *deflator_thread;
+pthread_mutex_t	fragment_mutex;
+
+/* user options that control parallelisation */
+int processors = -1;
+/* default size of fragment buffer in Mbytes */
+#define FRAGMENT_BUFFER_DEFAULT 512
+/* default size of data buffer in Mbytes */
+#define DATA_BUFFER_DEFAULT 128
+int all_buffers_size, fragment_buffer_size, data_buffer_size;
 
 squashfs_super_block sBlk;
 squashfs_operations s_ops;
@@ -168,9 +225,210 @@ struct test table[] = {
 	{ S_IXOTH | S_ISVTX, S_IXOTH | S_ISVTX, 9, 't' },
 	{ S_IXOTH | S_ISVTX, S_ISVTX, 9, 'T' },
 	{ S_IXOTH | S_ISVTX, S_IXOTH, 9, 'x' },
-	{ 0, 0, 0, 0} };
+	{ 0, 0, 0, 0}
+};
 
 
+struct queue *queue_init(int size)
+{
+	struct queue *queue = malloc(sizeof(struct queue));
+
+	if(queue == NULL)
+		return NULL;
+
+	if((queue->data = malloc(sizeof(void *) * (size + 1))) == NULL) {
+		free(queue);
+		return NULL;
+	}
+
+	queue->size = size + 1;
+	queue->readp = queue->writep = 0;
+	pthread_mutex_init(&queue->mutex, NULL);
+	pthread_cond_init(&queue->empty, NULL);
+	pthread_cond_init(&queue->full, NULL);
+
+	return queue;
+}
+
+
+void queue_put(struct queue *queue, void *data)
+{
+	int nextp;
+
+	pthread_mutex_lock(&queue->mutex);
+
+	while((nextp = (queue->writep + 1) % queue->size) == queue->readp)
+		pthread_cond_wait(&queue->full, &queue->mutex);
+
+	queue->data[queue->writep] = data;
+	queue->writep = nextp;
+	pthread_cond_signal(&queue->empty);
+	pthread_mutex_unlock(&queue->mutex);
+}
+
+
+void *queue_get(struct queue *queue)
+{
+	void *data;
+	pthread_mutex_lock(&queue->mutex);
+
+	while(queue->readp == queue->writep)
+		pthread_cond_wait(&queue->empty, &queue->mutex);
+
+	data = queue->data[queue->readp];
+	queue->readp = (queue->readp + 1) % queue->size;
+	pthread_cond_signal(&queue->full);
+	pthread_mutex_unlock(&queue->mutex);
+
+	return data;
+}
+
+
+/* Called with the cache mutex held */
+void insert_hash_table(struct cache *cache, struct cache_entry *entry)
+{
+	int hash = CALCULATE_HASH(entry->block);
+
+	entry->hash_next = cache->hash_table[hash];
+	cache->hash_table[hash] = entry;
+	entry->hash_prev = NULL;
+	if(entry->hash_next)
+		entry->hash_next->hash_prev = entry;
+}
+
+
+/* Called with the cache mutex held */
+void remove_hash_table(struct cache *cache, struct cache_entry *entry)
+{
+	if(entry->free_prev)
+		entry->free_prev->free_next = entry->free_next;
+	else
+		cache->hash_table[CALCULATE_HASH(entry->block)] = entry->free_next;
+	if(entry->free_next)
+		entry->free_next->free_prev = entry->free_prev;
+}
+
+
+/* Called with the cache mutex held */
+void remove_free_list(struct cache *cache, struct cache_entry *entry)
+{
+	if(entry->free_prev == NULL && entry->free_next == NULL)
+		/* not in free list */
+		return;
+	else if(entry->free_prev == entry->free_next) {
+		/* only this entry in the free list */
+		cache->free_list = NULL;
+	} else {
+		/* more than one entry in the free list */
+		entry->free_next->free_prev = entry->free_prev;
+		entry->free_prev->free_next = entry->free_next;
+		if(cache->free_list == entry)
+			cache->free_list = entry->free_next;
+	}
+
+	entry->free_prev = entry->free_next = NULL;
+}
+
+
+struct cache *cache_init(int buffer_size, int max_buffers)
+{
+	struct cache *cache = malloc(sizeof(struct cache));
+
+	if(cache == NULL)
+		return NULL;
+
+	cache->max_buffers = max_buffers;
+	cache->buffer_size = buffer_size;
+	cache->count = 0;
+	cache->free_list = NULL;
+	memset(cache->hash_table, 0, sizeof(struct cache_entry *) * 65536);
+	cache->wait_free = FALSE;
+	cache->wait_pending = FALSE;
+	pthread_mutex_init(&cache->mutex, NULL);
+	pthread_cond_init(&cache->wait_for_free, NULL);
+	pthread_cond_init(&cache->wait_for_pending, NULL);
+
+	return cache;
+}
+
+
+struct cache_entry *cache_lookup(struct cache *cache, long long block)
+{
+	int hash = CALCULATE_HASH(block);
+	struct cache_entry *entry;
+
+	pthread_mutex_lock(&cache->mutex);
+
+	for(entry = cache->hash_table[hash]; entry; entry = entry->hash_next)
+		if(entry->block == block)
+			break;
+
+	if(entry) {
+		/* found the block in the cache, increment used count and
+ 		 * if necessary remove from free list so it won't disappear
+ 		 */
+		entry->used ++;
+		remove_free_list(cache, entry);
+		
+	}
+
+	pthread_mutex_unlock(&cache->mutex);
+	return entry;
+}
+
+
+struct cache_entry *cache_get(struct cache *cache, long long block, int size)
+{
+	struct cache_entry *entry = cache_lookup(cache, block);
+
+	if(entry == NULL) {
+		/* not in the cache */
+		
+		pthread_mutex_lock(&cache->mutex);
+
+		/* first try to allocate new block */
+		if(cache->count < cache->max_buffers) {
+			entry = malloc(sizeof(struct cache_entry));
+			if(entry == NULL)
+				goto failed;
+			entry->read_buffer = malloc(cache->buffer_size * 2);
+			if(entry->read_buffer == NULL) {
+				free(entry);
+				entry = NULL;
+				goto failed;
+			}
+			entry->compress_buffer = entry->read_buffer + cache->buffer_size;
+			entry->cache = cache;
+			cache->count ++;
+		} else {
+			/* try to get from free list */
+			while(cache->free_list == NULL) {
+				cache->wait_free = TRUE;
+				pthread_cond_wait(&cache->wait_for_free, &cache->mutex);
+			}
+			entry = cache->free_list;
+			remove_free_list(cache, entry);
+			remove_hash_table(cache, entry);
+		}
+
+		/* initialise block and insert into the hash table */
+		entry->block = block;
+		entry->size = size;
+		entry->used = 1;
+		entry->pending = TRUE;
+		insert_hash_table(cache, entry);
+
+		/* queue to read thread to read and ultimately (via the decompress
+ 		 * threads) decompress the buffer
+ 		 */
+		queue_put(to_reader, entry);
+	}
+
+failed:
+	return entry;
+}
+
+			
 char *modestr(char *str, int mode)
 {
 	int i;
@@ -242,8 +500,6 @@ int print_filename(char *pathname, struct inode *inode)
 	return 1;
 }
 	
-#define CALCULATE_HASH(start)	(start & 0xffff)
-
 int add_entry(struct hash_table_entry *hash_table[], int start, int bytes)
 {
 	int hash = CALCULATE_HASH(start);
@@ -1858,6 +2114,81 @@ struct pathname *process_extract_files(struct pathname *path, char *filename)
 	return path;
 }
 		
+
+void *reader(void *arg)
+{
+}
+
+
+void *writer(void *arg)
+{
+}
+
+
+void *deflator(void *arg)
+{
+}
+
+
+void initialise_threads()
+{
+	int i;
+	sigset_t sigmask, old_mask;
+
+	sigemptyset(&sigmask);
+	sigaddset(&sigmask, SIGINT);
+	sigaddset(&sigmask, SIGQUIT);
+	if(sigprocmask(SIG_BLOCK, &sigmask, &old_mask) == -1)
+		EXIT_UNSQUASH("Failed to set signal mask in intialise_threads\n");
+
+	//signal(SIGUSR1, sigusr1_handler);
+
+	if(processors == -1) {
+#ifndef linux
+		int mib[2];
+		size_t len = sizeof(processors);
+
+		mib[0] = CTL_HW;
+#ifdef HW_AVAILCPU
+		mib[1] = HW_AVAILCPU;
+#else
+		mib[1] = HW_NCPU;
+#endif
+
+		if(sysctl(mib, 2, &processors, &len, NULL, 0) == -1) {
+			ERROR("Failed to get number of available processors.  Defaulting to 1\n");
+			processors = 1;
+		}
+#else
+		processors = get_nprocs();
+#endif
+	}
+
+	if((thread = malloc((2 + processors) * sizeof(pthread_t))) == NULL)
+		EXIT_UNSQUASH("Out of memory allocating thread descriptors\n");
+	deflator_thread = &thread[2];
+
+	to_reader = queue_init(all_buffers_size);
+	to_deflate = queue_init(all_buffers_size);
+	to_writer = queue_init(all_buffers_size);
+	fragment_buffer = cache_init(block_size, fragment_buffer_size);
+	data_buffer = cache_init(block_size, data_buffer_size);
+	pthread_create(&thread[0], NULL, reader, NULL);
+	pthread_create(&thread[1], NULL, writer, NULL);
+	pthread_mutex_init(&fragment_mutex, NULL);
+
+	for(i = 0; i < processors; i++) {
+		if(pthread_create(&deflator_thread[i], NULL, deflator, NULL) != 0 )
+			EXIT_UNSQUASH("Failed to create thread\n");
+	}
+
+	printf("Parallel unsquashfs: Using %d processor%s\n", processors,
+			processors == 1 ? "" : "s");
+
+	if(sigprocmask(SIG_SETMASK, &old_mask, NULL) == -1)
+		EXIT_UNSQUASH("Failed to set signal mask in intialise_threads\n");
+}
+
 
 #define VERSION() \
 	printf("unsquashfs version 1.5-CVS (2007/01/25)\n");\
