@@ -1,7 +1,7 @@
 /*
  * Unsquash a squashfs filesystem.  This is a highly compressed read only filesystem.
  *
- * Copyright (c) 2002, 2003, 2004, 2005, 2006, 2007
+ * Copyright (c) 2002, 2003, 2004, 2005, 2006, 2007, 2008
  *  Phillip Lougher <phillip@lougher.demon.co.uk>
  *
  * This program is free software; you can redistribute it and/or
@@ -137,6 +137,7 @@ struct cache_entry {
 	long long block;
 	int	size;
 	int	used;
+	int error;
 	int	pending;
 	struct cache_entry *hash_next;
 	struct cache_entry *hash_prev;
@@ -415,6 +416,7 @@ struct cache_entry *cache_get(struct cache *cache, long long block, int size)
 		entry->block = block;
 		entry->size = size;
 		entry->used = 1;
+		entry->error = TRUE;
 		entry->pending = TRUE;
 		insert_hash_table(cache, entry);
 
@@ -428,7 +430,23 @@ failed:
 	return entry;
 }
 
-			
+	
+void cache_block_ready(struct cache_entry *entry, int error)
+{
+	pthread_mutex_lock(&entry->cache->mutex);
+	entry->pending = FALSE;
+	entry->error = error;
+
+	/* if the wait_pending flag is set, one or more threads may be waiting on
+ 	 * this buffer */
+	if(entry->cache->wait_pending) {
+		entry->cache->wait_pending = FALSE;
+		pthread_cond_broadcast(&entry->cache->wait_for_pending);
+	}
+	pthread_mutex_lock(&entry->cache->mutex);
+}
+
+
 char *modestr(char *str, int mode)
 {
 	int i;
@@ -2117,16 +2135,61 @@ struct pathname *process_extract_files(struct pathname *path, char *filename)
 
 void *reader(void *arg)
 {
+	while(1) {
+		struct cache_entry *entry = queue_get(to_reader);
+		int res;
+
+		res = read_bytes(entry->block,
+			SQUASHFS_COMPRESSED_SIZE_BLOCK(entry->size),
+			SQUASHFS_COMPRESSED_BLOCK(entry->size) ? entry->read_buffer :
+			entry->compress_buffer);
+
+		if(res && SQUASHFS_COMPRESSED_BLOCK(entry->size))
+			/* queue successfully read block to the deflate thread(s)
+ 			 * for further processing */
+			queue_put(to_deflate, entry);
+		else
+			/* block has either been successfully read and is uncompressed,
+ 			 * or an error has occurred, clear pending flag, set
+ 			 * error appropriately, and wake up any threads waiting on
+ 			 * this buffer */
+			cache_block_ready(entry, !res);
+	}
 }
 
 
 void *writer(void *arg)
 {
+	while(1) {
+		struct cache_entry *entry = queue_get(to_reader);
+	}
 }
 
 
 void *deflator(void *arg)
 {
+	while(1) {
+		struct cache_entry *entry = queue_get(to_reader);
+		int res;
+		unsigned long bytes;
+
+		res = uncompress((unsigned char *) entry->compress_buffer,
+			&bytes, (const unsigned char *) entry->read_buffer,
+			SQUASHFS_COMPRESSED_SIZE_BLOCK(entry->size));
+
+		if(res != Z_OK) {
+			if(res == Z_MEM_ERROR)
+				ERROR("zlib::uncompress failed, not enough memory\n");
+			else if(res == Z_BUF_ERROR)
+				ERROR("zlib::uncompress failed, not enough room in output buffer\n");
+			else
+				ERROR("zlib::uncompress failed, unknown error %d\n", res);
+		}
+		/* block has been either successfully decompressed, or an error
+ 		 * occurred, clear pending flag, set error appropriately and
+ 		 * wake up any threads waiting on this block */ 
+		cache_block_ready(entry, res != Z_OK);
+	}
 }
 
 
