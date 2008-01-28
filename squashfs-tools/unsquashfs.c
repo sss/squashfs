@@ -311,6 +311,21 @@ void remove_hash_table(struct cache *cache, struct cache_entry *entry)
 
 
 /* Called with the cache mutex held */
+void insert_free_list(struct cache *cache, struct cache_entry *entry)
+{
+	if(cache->free_list) {
+		entry->free_next = cache->free_list;
+		entry->free_prev = cache->free_list->free_prev;
+		cache->free_list->free_prev->free_next = entry;
+		cache->free_list->free_prev = entry;
+	} else {
+		cache->free_list = entry;
+		entry->free_prev = entry->free_next = entry;
+	}
+}
+
+
+/* Called with the cache mutex held */
 void remove_free_list(struct cache *cache, struct cache_entry *entry)
 {
 	if(entry->free_prev == NULL && entry->free_next == NULL)
@@ -353,7 +368,7 @@ struct cache *cache_init(int buffer_size, int max_buffers)
 }
 
 
-struct cache_entry *cache_lookup(struct cache *cache, long long block)
+struct cache_entry *cache_get(struct cache *cache, long long block, int size)
 {
 	int hash = CALCULATE_HASH(block);
 	struct cache_entry *entry;
@@ -370,23 +385,10 @@ struct cache_entry *cache_lookup(struct cache *cache, long long block)
  		 */
 		entry->used ++;
 		remove_free_list(cache, entry);
-		
-	}
-
-	pthread_mutex_unlock(&cache->mutex);
-	return entry;
-}
-
-
-struct cache_entry *cache_get(struct cache *cache, long long block, int size)
-{
-	struct cache_entry *entry = cache_lookup(cache, block);
-
-	if(entry == NULL) {
+		pthread_mutex_unlock(&cache->mutex);
+	} else {
 		/* not in the cache */
 		
-		pthread_mutex_lock(&cache->mutex);
-
 		/* first try to allocate new block */
 		if(cache->count < cache->max_buffers) {
 			entry = malloc(sizeof(struct cache_entry));
@@ -395,7 +397,6 @@ struct cache_entry *cache_get(struct cache *cache, long long block, int size)
 			entry->read_buffer = malloc(cache->buffer_size * 2);
 			if(entry->read_buffer == NULL) {
 				free(entry);
-				entry = NULL;
 				goto failed;
 			}
 			entry->data = entry->read_buffer + cache->buffer_size;
@@ -416,18 +417,22 @@ struct cache_entry *cache_get(struct cache *cache, long long block, int size)
 		entry->block = block;
 		entry->size = size;
 		entry->used = 1;
-		entry->error = TRUE;
+		entry->error = FALSE;
 		entry->pending = TRUE;
 		insert_hash_table(cache, entry);
 
 		/* queue to read thread to read and ultimately (via the decompress
  		 * threads) decompress the buffer
  		 */
+		pthread_mutex_unlock(&cache->mutex);
 		queue_put(to_reader, entry);
 	}
 
-failed:
 	return entry;
+
+failed:
+	pthread_mutex_unlock(&cache->mutex);
+	return NULL;
 }
 
 	
@@ -443,6 +448,37 @@ void cache_block_ready(struct cache_entry *entry, int error)
 		entry->cache->wait_pending = FALSE;
 		pthread_cond_broadcast(&entry->cache->wait_for_pending);
 	}
+
+	pthread_mutex_lock(&entry->cache->mutex);
+}
+
+
+void cache_block_wait(struct cache_entry *entry)
+{
+	pthread_mutex_lock(&entry->cache->mutex);
+
+	while(entry->pending) {
+		entry->cache->wait_pending = TRUE;
+		pthread_cond_wait(&entry->cache->wait_for_pending, &entry->cache->mutex);
+	}
+
+	pthread_mutex_lock(&entry->cache->mutex);
+}
+
+
+void cache_block_put(struct cache_entry *entry)
+{
+	pthread_mutex_lock(&entry->cache->mutex);
+
+	entry->used --;
+	if(entry->used == 0) {
+		insert_free_list(entry->cache, entry);
+		if(entry->cache->wait_free) {
+			entry->cache->wait_free = FALSE;
+			pthread_cond_broadcast(&entry->cache->wait_for_free);
+		}
+	}
+
 	pthread_mutex_lock(&entry->cache->mutex);
 }
 
@@ -1144,7 +1180,7 @@ int create_inode(char *pathname, struct inode *i)
 
 			if(write_file(i->data, pathname, i->fragment, i->frag_bytes,
 					i->offset, i->blocks, i->start, i->block_ptr, i->mode)) {
-				set_attributes(pathname, i->mode, i->uid, i->gid, i->time, force);
+				//set_attributes(pathname, i->mode, i->uid, i->gid, i->time, force);
 				file_count ++;
 			}
 			break;
@@ -2156,18 +2192,22 @@ void *writer(void *arg)
 				continue;
 			}
 
+			cache_block_wait(block->buffer);
 			if(write_block(file_fd, block->buffer->data, block->size) == FALSE) {
 				ERROR("writer: failed to write data block %d\n", i);
 				goto failure;
 			}
+			cache_block_put(block->buffer);
 		}
 
 		if(file->frag_buffer) {
+			cache_block_wait(file->frag_buffer);
 			if(write_block(file_fd, file->frag_buffer->data + file->frag_offset,
 									file->frag_bytes) == FALSE) {
 				ERROR("writer: failed to write fragment\n");
 				goto failure;
 			}
+			cache_block_put(file->frag_buffer);
 		}
 
 		if(hole) {
@@ -2279,7 +2319,7 @@ void initialise_threads()
 
 
 #define VERSION() \
-	printf("unsquashfs version 1.5-CVS (2007/01/27)\n");\
+	printf("unsquashfs version 1.5-CVS (2007/01/28)\n");\
 	printf("copyright (C) 2007 Phillip Lougher <phillip@lougher.demon.co.uk>\n\n"); \
     	printf("This program is free software; you can redistribute it and/or\n");\
 	printf("modify it under the terms of the GNU General Public License\n");\
