@@ -84,7 +84,7 @@ struct hash_table_entry {
 
 typedef struct squashfs_operations {
 	struct dir *(*squashfs_opendir)(char *pathname, unsigned int block_start, unsigned int offset);
-	char *(*read_fragment)(unsigned int fragment);
+	void (*read_fragment)(unsigned int fragment, long long *start_block, int *size);
 	void (*read_fragment_table)();
 	void (*read_block_list)(unsigned int *block_list, char *block_ptr, int blocks);
 	struct inode *(*read_inode)(unsigned int start_block, unsigned int offset);
@@ -144,7 +144,7 @@ struct cache_entry {
 	struct cache_entry *free_next;
 	struct cache_entry *free_prev;
 	char *read_buffer;
-	char *compress_buffer;
+	char *data;
 };
 
 /* struct describing queues used to pass data between threads */
@@ -158,7 +158,7 @@ struct queue {
 	void **data;
 };
 
-struct cache *fragment_buffer, *data_buffer;
+struct cache *fragment_cache, *data_cache;
 struct queue *to_reader, *to_deflate, *to_writer, *from_writer;
 pthread_t *thread, *deflator_thread;
 pthread_mutex_t	fragment_mutex;
@@ -398,7 +398,7 @@ struct cache_entry *cache_get(struct cache *cache, long long block, int size)
 				entry = NULL;
 				goto failed;
 			}
-			entry->compress_buffer = entry->read_buffer + cache->buffer_size;
+			entry->data = entry->read_buffer + cache->buffer_size;
 			entry->cache = cache;
 			cache->count ++;
 		} else {
@@ -840,39 +840,23 @@ void read_fragment_table_1()
 }
 
 
-char *read_fragment(unsigned int fragment)
+void read_fragment(unsigned int fragment, long long *start_block, int *size)
 {
 	TRACE("read_fragment: reading fragment %d\n", fragment);
 
-	if(cached_frag == SQUASHFS_INVALID_FRAG || fragment != cached_frag) {
-		squashfs_fragment_entry *fragment_entry = &fragment_table[fragment];
-		if(read_data_block(fragment_entry->start_block, fragment_entry->size, fragment_data) == 0) {
-			ERROR("read_fragment: failed to read fragment %d\n", fragment);
-			cached_frag = SQUASHFS_INVALID_FRAG;
-			return NULL;
-		}
-		cached_frag = fragment;
-	}
-
-	return fragment_data;
+	squashfs_fragment_entry *fragment_entry = &fragment_table[fragment];
+	*start_block = fragment_entry->start_block;
+	*size = fragment_entry->size;
 }
 
 
-char *read_fragment_2(unsigned int fragment)
+void read_fragment_2(unsigned int fragment, long long *start_block, int *size)
 {
 	TRACE("read_fragment: reading fragment %d\n", fragment);
 
-	if(cached_frag == SQUASHFS_INVALID_FRAG || fragment != cached_frag) {
-		squashfs_fragment_entry_2 *fragment_entry = &fragment_table_2[fragment];
-		if(read_data_block(fragment_entry->start_block, fragment_entry->size, fragment_data) == 0) {
-			ERROR("read_fragment: failed to read fragment %d\n", fragment);
-			cached_frag = SQUASHFS_INVALID_FRAG;
-			return NULL;
-		}
-		cached_frag = fragment;
-	}
-
-	return fragment_data;
+	squashfs_fragment_entry_2 *fragment_entry = &fragment_table_2[fragment];
+	*start_block = fragment_entry->start_block;
+	*size = fragment_entry->size;
 }
 
 
@@ -913,86 +897,82 @@ failure:
 	return FALSE;
 }
 
-	
-int write_file(long long file_size, char *pathname, unsigned int fragment, unsigned int frag_bytes,
-unsigned int offset, int blocks, long long start, char *block_ptr,
-unsigned int mode)
+
+struct file_entry {
+	int size;
+	struct cache_entry *buffer;
+};
+
+
+struct squashfs_file {
+	int fd;
+	int file_size;
+	int blocks;
+	int frag_offset;
+	int frag_bytes;
+	struct cache_entry *frag_buffer;
+	struct file_entry block[0];
+};
+
+
+int write_file(long long file_size, char *pathname, unsigned int fragment,
+unsigned int frag_bytes, unsigned int offset, int blocks, long long start,
+char *block_ptr, unsigned int mode)
 {
-	unsigned int file_fd, bytes, i;
+	unsigned int file_fd, i;
 	unsigned int *block_list;
 	int file_end = file_size / block_size;
+	struct squashfs_file *file;
 
 	TRACE("write_file: regular file, blocks %d\n", blocks);
-
-	hole = 0;
-	if((block_list = malloc(blocks * sizeof(unsigned int))) == NULL) {
-		ERROR("write_file: unable to malloc block list\n");
-		return FALSE;
-	}
-
-	s_ops.read_block_list(block_list, block_ptr, blocks);
 
 	if((file_fd = open(pathname, O_CREAT | O_WRONLY | (force ? O_TRUNC : 0), (mode_t) mode & 0777)) == -1) {
 		ERROR("write_file: failed to create file %s, because %s\n", pathname,
 			strerror(errno));
-		free(block_list);
 		return FALSE;
 	}
 
+	if((block_list = malloc(blocks * sizeof(unsigned int))) == NULL)
+		EXIT_UNSQUASH("write_file: unable to malloc block list\n");
+
+	s_ops.read_block_list(block_list, block_ptr, blocks);
+
+	if((file = malloc(sizeof(struct squashfs_file) + blocks * sizeof(struct file_entry))) == NULL)
+		EXIT_UNSQUASH("write_file: unable to malloc file\n");
+
 	for(i = 0; i < blocks; i++) {
-		if(block_list[i] == 0) { /* sparse file */
-			hole += i == file_end ? file_size & (block_size - 1) : block_size;
-			continue;
+		int c_byte = SQUASHFS_COMPRESSED_SIZE_BLOCK(block_list[i]);
+		file->block[i].size = i == file_end ? file_size & (block_size - 1) : block_size;
+		if(block_list[i] == 0) /* sparse file */
+			file->block[i].buffer = NULL;
+		else {
+			file->block[i].buffer = cache_get(data_cache, start, c_byte);
+			if(file->block[i].buffer == NULL)
+				EXIT_UNSQUASH("write_file: cache_get failed\n");
+			start += c_byte;
 		}
-		if((bytes = read_data_block(start, block_list[i], file_data)) == 0) {
-			ERROR("write_file: failed to read data block 0x%llx\n", start);
-			goto failure;
-		}
-
-		if(write_block(file_fd, file_data, bytes) == FALSE) {
-			ERROR("write_file: failed to write data block 0x%llx\n", start);
-			goto failure;
-		}
-
-		start += SQUASHFS_COMPRESSED_SIZE_BLOCK(block_list[i]);
 	}
 
 	if(frag_bytes != 0) {
-		char *fragment_data = s_ops.read_fragment(fragment);
+		int size;
+		long long start;
 
-		if(fragment_data == NULL)
-			goto failure;
+		s_ops.read_fragment(fragment, &start, &size);
+		file->frag_offset = offset;
+		file->frag_bytes = frag_bytes;
+		file->frag_buffer = cache_get(fragment_cache, start, size);
+		if(file->frag_buffer == NULL)
+			EXIT_UNSQUASH("write_file: cache_get failed\n");
+	} else
+		file->frag_buffer = NULL;
 
-		if(write_block(file_fd, fragment_data + offset, frag_bytes) == FALSE) {
-			ERROR("write_file: failed to write fragment %d\n", fragment);
-			goto failure;
-		}
-	}
+	file->fd = file_fd;
+	file->file_size = file_size;
+	file->blocks = blocks;
+	queue_put(to_writer, file);
 
-	if(hole) {
-		/* corner case for hole extending to end of file */
-		if(lseek(file_fd, hole, SEEK_CUR) == -1) {
-			/* for broken lseeks which cannot seek beyond end of
- 			 * file, write_block will do the right thing */
-			hole --;
-			if(write_block(file_fd, "\0", 1) == FALSE) {
-				ERROR("write_file: failed to write sparse data block\n");
-				goto failure;
-			}
-		} else if(ftruncate(file_fd, file_size) == -1) {
-			ERROR("write_file: failed to write sparse data block\n");
-			goto failure;
-		}
-	}
-
-	close(file_fd);
 	free(block_list);
 	return TRUE;
-
-failure:
-	close(file_fd);
-	free(block_list);
-	return FALSE;
 }
 
 
@@ -2142,7 +2122,7 @@ void *reader(void *arg)
 		res = read_bytes(entry->block,
 			SQUASHFS_COMPRESSED_SIZE_BLOCK(entry->size),
 			SQUASHFS_COMPRESSED_BLOCK(entry->size) ? entry->read_buffer :
-			entry->compress_buffer);
+			entry->data);
 
 		if(res && SQUASHFS_COMPRESSED_BLOCK(entry->size))
 			/* queue successfully read block to the deflate thread(s)
@@ -2160,8 +2140,55 @@ void *reader(void *arg)
 
 void *writer(void *arg)
 {
+	int hole = 0, i;
+
 	while(1) {
-		struct cache_entry *entry = queue_get(to_reader);
+		struct squashfs_file *file = queue_get(to_reader);
+		int file_fd = file->fd;
+
+		TRACE("writer: regular file, blocks %d\n", file->blocks);
+
+		for(i = 0; i < file->blocks; i++) {
+			struct file_entry *block = &file->block[i];
+
+			if(block->buffer == 0) { /* sparse file */
+				hole += block->size;
+				continue;
+			}
+
+			if(write_block(file_fd, block->buffer->data, block->size) == FALSE) {
+				ERROR("writer: failed to write data block %d\n", i);
+				goto failure;
+			}
+		}
+
+		if(file->frag_buffer) {
+			if(write_block(file_fd, file->frag_buffer->data + file->frag_offset,
+									file->frag_bytes) == FALSE) {
+				ERROR("writer: failed to write fragment\n");
+				goto failure;
+			}
+		}
+
+		if(hole) {
+			/* corner case for hole extending to end of file */
+			if(lseek(file_fd, hole, SEEK_CUR) == -1) {
+				/* for broken lseeks which cannot seek beyond end of
+ 			 	* file, write_block will do the right thing */
+				hole --;
+				if(write_block(file_fd, "\0", 1) == FALSE) {
+					ERROR("writer: failed to write sparse data block\n");
+					goto failure;
+				}
+			} else if(ftruncate(file_fd, file->file_size) == -1) {
+				ERROR("writer: failed to write sparse data block\n");
+				goto failure;
+			}
+		}
+
+failure:
+		close(file_fd);
+		free(file);
 	}
 }
 
@@ -2173,9 +2200,7 @@ void *deflator(void *arg)
 		int res;
 		unsigned long bytes;
 
-		res = uncompress((unsigned char *) entry->compress_buffer,
-			&bytes, (const unsigned char *) entry->read_buffer,
-			SQUASHFS_COMPRESSED_SIZE_BLOCK(entry->size));
+		res = uncompress((unsigned char *) entry->data, &bytes, (const unsigned char *) entry->read_buffer, SQUASHFS_COMPRESSED_SIZE_BLOCK(entry->size));
 
 		if(res != Z_OK) {
 			if(res == Z_MEM_ERROR)
@@ -2234,8 +2259,8 @@ void initialise_threads()
 	to_reader = queue_init(all_buffers_size);
 	to_deflate = queue_init(all_buffers_size);
 	to_writer = queue_init(all_buffers_size);
-	fragment_buffer = cache_init(block_size, fragment_buffer_size);
-	data_buffer = cache_init(block_size, data_buffer_size);
+	fragment_cache = cache_init(block_size, fragment_buffer_size);
+	data_cache = cache_init(block_size, data_buffer_size);
 	pthread_create(&thread[0], NULL, reader, NULL);
 	pthread_create(&thread[1], NULL, writer, NULL);
 	pthread_mutex_init(&fragment_mutex, NULL);
@@ -2254,7 +2279,7 @@ void initialise_threads()
 
 
 #define VERSION() \
-	printf("unsquashfs version 1.5-CVS (2007/01/25)\n");\
+	printf("unsquashfs version 1.5-CVS (2007/01/27)\n");\
 	printf("copyright (C) 2007 Phillip Lougher <phillip@lougher.demon.co.uk>\n\n"); \
     	printf("This program is free software; you can redistribute it and/or\n");\
 	printf("modify it under the terms of the GNU General Public License\n");\
