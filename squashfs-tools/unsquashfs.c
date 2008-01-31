@@ -160,13 +160,13 @@ struct queue {
 
 struct cache *fragment_cache, *data_cache;
 struct queue *to_reader, *to_deflate, *to_writer, *from_writer;
-pthread_t *thread, *deflator_thread;
+pthread_t *thread, *deflator_thread, *writer_thread;
 pthread_mutex_t	fragment_mutex;
 
 /* user options that control parallelisation */
 int processors = -1;
 /* default size of fragment buffer in Mbytes */
-#define FRAGMENT_BUFFER_DEFAULT 512
+#define FRAGMENT_BUFFER_DEFAULT 128
 /* default size of data buffer in Mbytes */
 #define DATA_BUFFER_DEFAULT 128
 
@@ -963,6 +963,7 @@ failure:
 
 
 struct file_entry {
+	int offset;
 	int size;
 	struct cache_entry *buffer;
 };
@@ -972,10 +973,10 @@ struct squashfs_file {
 	int fd;
 	int file_size;
 	int blocks;
+	struct queue *queue;
 	int frag_offset;
 	int frag_bytes;
 	struct cache_entry *frag_buffer;
-	struct file_entry block[0];
 };
 
 
@@ -1001,39 +1002,76 @@ char *block_ptr, unsigned int mode)
 
 	s_ops.read_block_list(block_list, block_ptr, blocks);
 
-	if((file = malloc(sizeof(struct squashfs_file) + blocks * sizeof(struct file_entry))) == NULL)
+	if((file = malloc(sizeof(struct squashfs_file))) == NULL)
 		EXIT_UNSQUASH("write_file: unable to malloc file\n");
+
+	/* the writer thread is queued a squashfs_file structure describing the
+ 	 * file.  If the file has one or more blocks it is also sent a handle to
+ 	 * a separate queue holding the queued blocks (references to blocks in the
+ 	 * cache).  If there is only a fragment associated with the file, then this
+ 	 * stored within the squashfs_file structure for quicker processing */
+	file->fd = file_fd;
+	file->file_size = file_size;
+	if(blocks) {
+		file->blocks = blocks + (frag_bytes > 0);
+		file->frag_buffer = NULL;
+		file->queue = queue_init(file->blocks);
+		queue_put(to_writer, file);
+	} else {
+		file->blocks = 0;
+		file->queue = NULL;
+	}
 
 	for(i = 0; i < blocks; i++) {
 		int c_byte = SQUASHFS_COMPRESSED_SIZE_BLOCK(block_list[i]);
-		file->block[i].size = i == file_end ? file_size & (block_size - 1) : block_size;
+		struct file_entry *block = malloc(sizeof(struct file_entry *));
+
+		if(block == NULL)
+			EXIT_UNSQUASH("write_file: unable to malloc file\n");
+		block->offset = 0;
+		block->size = i == file_end ? file_size & (block_size - 1) : block_size;
 		if(block_list[i] == 0) /* sparse file */
-			file->block[i].buffer = NULL;
+			block->buffer = NULL;
 		else {
-			file->block[i].buffer = cache_get(data_cache, start, c_byte);
-			if(file->block[i].buffer == NULL)
+			block->buffer = cache_get(data_cache, start, block_list[i]);
+			if(block->buffer == NULL)
 				EXIT_UNSQUASH("write_file: cache_get failed\n");
 			start += c_byte;
 		}
+		queue_put(file->queue, block);
 	}
 
-	if(frag_bytes != 0) {
+	if(frag_bytes) {
 		int size;
 		long long start;
+		struct cache_entry *buffer;
 
 		s_ops.read_fragment(fragment, &start, &size);
-		file->frag_offset = offset;
-		file->frag_bytes = frag_bytes;
-		file->frag_buffer = cache_get(fragment_cache, start, size);
-		if(file->frag_buffer == NULL)
+		buffer = cache_get(fragment_cache, start, size);
+		if(buffer == NULL)
 			EXIT_UNSQUASH("write_file: cache_get failed\n");
-	} else
+		if(blocks) {
+			/* squashfs_file structure already queued, send via separate
+ 			 * queue */
+			struct file_entry *block = malloc(sizeof(struct file_entry *));
+
+			if(block == NULL)
+				EXIT_UNSQUASH("write_file: unable to malloc file\n");
+			block->offset = offset;
+			block->size = frag_bytes;
+			block->buffer = buffer;
+			queue_put(file->queue, block);
+		} else {
+			/* send via file structure */
+			file->frag_offset = offset;
+			file->frag_bytes = frag_bytes;
+			file->frag_buffer = buffer;
+		}
+	} else if(blocks == 0)
 		file->frag_buffer = NULL;
 
-	file->fd = file_fd;
-	file->file_size = file_size;
-	file->blocks = blocks;
-	queue_put(to_writer, file);
+	if(blocks == 0)
+		queue_put(to_writer, file);
 
 	free(block_list);
 	return TRUE;
@@ -2212,24 +2250,27 @@ void *writer(void *arg)
 		struct squashfs_file *file = queue_get(to_writer);
 		int file_fd = file->fd;
 		int hole = 0;
+		struct queue *queue = file->queue;
 
 		TRACE("writer: regular file, blocks %d\n", file->blocks);
 
 		for(i = 0; i < file->blocks; i++) {
-			struct file_entry *block = &file->block[i];
+			struct file_entry *block = queue_get(queue);
 
 			if(block->buffer == 0) { /* sparse file */
 				hole += block->size;
+				free(block);
 				continue;
 			}
 
 			cache_block_wait(block->buffer);
-			if(write_block(file_fd, block->buffer->data, block->size, hole) == FALSE) {
+			if(write_block(file_fd, block->buffer->data + block->offset, block->size, hole) == FALSE) {
 				ERROR("writer: failed to write data block %d\n", i);
 				goto failure;
 			}
 			hole = 0;
 			cache_block_put(block->buffer);
+			free(block);
 		}
 
 		if(file->frag_buffer) {
@@ -2261,6 +2302,8 @@ void *writer(void *arg)
 
 failure:
 		close(file_fd);
+		if(queue)
+			queue_free(queue);
 		free(file);
 	}
 }
@@ -2327,9 +2370,10 @@ void initialise_threads(int fragment_buffer_size, int data_buffer_size)
 #endif
 	}
 
-	if((thread = malloc((2 + processors) * sizeof(pthread_t))) == NULL)
+	if((thread = malloc((1 + processors * 4) * sizeof(pthread_t))) == NULL)
 		EXIT_UNSQUASH("Out of memory allocating thread descriptors\n");
-	deflator_thread = &thread[2];
+	deflator_thread = &thread[1];
+	writer_thread = &deflator_thread[processors];
 
 	to_reader = queue_init(all_buffers_size);
 	to_deflate = queue_init(all_buffers_size);
@@ -2337,11 +2381,15 @@ void initialise_threads(int fragment_buffer_size, int data_buffer_size)
 	fragment_cache = cache_init(block_size, fragment_buffer_size);
 	data_cache = cache_init(block_size, data_buffer_size);
 	pthread_create(&thread[0], NULL, reader, NULL);
-	pthread_create(&thread[1], NULL, writer, NULL);
+	//pthread_create(&writer_thread[0], NULL, writer, NULL);
 	pthread_mutex_init(&fragment_mutex, NULL);
 
 	for(i = 0; i < processors; i++) {
 		if(pthread_create(&deflator_thread[i], NULL, deflator, NULL) != 0 )
+			EXIT_UNSQUASH("Failed to create thread\n");
+	}
+	for(i = 0; i < 1; i++) {
+		if(pthread_create(&writer_thread[i], NULL, writer, NULL) != 0 )
 			EXIT_UNSQUASH("Failed to create thread\n");
 	}
 
@@ -2354,7 +2402,7 @@ void initialise_threads(int fragment_buffer_size, int data_buffer_size)
 
 
 #define VERSION() \
-	printf("unsquashfs version 1.5-CVS (2007/01/29)\n");\
+	printf("unsquashfs version 1.5-CVS (2007/01/31)\n");\
 	printf("copyright (C) 2007 Phillip Lougher <phillip@lougher.demon.co.uk>\n\n"); \
     	printf("This program is free software; you can redistribute it and/or\n");\
 	printf("modify it under the terms of the GNU General Public License\n");\
