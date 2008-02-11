@@ -143,7 +143,6 @@ struct cache_entry {
 	struct cache_entry *hash_prev;
 	struct cache_entry *free_next;
 	struct cache_entry *free_prev;
-	char *read_buffer;
 	char *data;
 };
 
@@ -399,12 +398,11 @@ struct cache_entry *cache_get(struct cache *cache, long long block, int size)
 			entry = malloc(sizeof(struct cache_entry));
 			if(entry == NULL)
 				goto failed;
-			entry->read_buffer = malloc(cache->buffer_size * 2);
-			if(entry->read_buffer == NULL) {
+			entry->data = malloc(cache->buffer_size);
+			if(entry->data == NULL) {
 				free(entry);
 				goto failed;
 			}
-			entry->data = entry->read_buffer + cache->buffer_size;
 			entry->cache = cache;
 			entry->free_prev = entry->free_next = NULL;
 			cache->count ++;
@@ -2184,7 +2182,6 @@ void *reader(void *arg)
 		struct cache_entry *entry = queue_get(to_reader);
 		int res = read_bytes(entry->block,
 			SQUASHFS_COMPRESSED_SIZE_BLOCK(entry->size),
-			SQUASHFS_COMPRESSED_BLOCK(entry->size) ? entry->read_buffer :
 			entry->data);
 
 		if(res && SQUASHFS_COMPRESSED_BLOCK(entry->size))
@@ -2266,12 +2263,14 @@ failure:
 /* decompress thread.  This decompresses buffers queued by the read thread */
 void *deflator(void *arg)
 {
+	char tmp[block_size];
+
 	while(1) {
 		struct cache_entry *entry = queue_get(to_deflate);
 		int res;
 		unsigned long bytes = block_size;
 
-		res = uncompress((unsigned char *) entry->data, &bytes, (const unsigned char *) entry->read_buffer, SQUASHFS_COMPRESSED_SIZE_BLOCK(entry->size));
+		res = uncompress((unsigned char *) tmp, &bytes, (const unsigned char *) entry->data, SQUASHFS_COMPRESSED_SIZE_BLOCK(entry->size));
 
 		if(res != Z_OK) {
 			if(res == Z_MEM_ERROR)
@@ -2280,7 +2279,9 @@ void *deflator(void *arg)
 				ERROR("zlib::uncompress failed, not enough room in output buffer\n");
 			else
 				ERROR("zlib::uncompress failed, unknown error %d\n", res);
-		}
+		} else
+			memcpy(entry->data, tmp, bytes);
+
 		/* block has been either successfully decompressed, or an error
  		 * occurred, clear pending flag, set error appropriately and
  		 * wake up any threads waiting on this block */ 
@@ -2352,7 +2353,7 @@ void initialise_threads(int fragment_buffer_size, int data_buffer_size)
 
 
 #define VERSION() \
-	printf("unsquashfs version 1.5-CVS (2007/01/31)\n");\
+	printf("unsquashfs version 1.5-CVS (2007/02/10)\n");\
 	printf("copyright (C) 2007 Phillip Lougher <phillip@lougher.demon.co.uk>\n\n"); \
     	printf("This program is free software; you can redistribute it and/or\n");\
 	printf("modify it under the terms of the GNU General Public License\n");\
@@ -2449,8 +2450,8 @@ options:
 
 	block_size = sBlk.block_size;
 
-	fragment_buffer_size = (FRAGMENT_BUFFER_DEFAULT << 19) / block_size;
-	data_buffer_size = (DATA_BUFFER_DEFAULT << 19) / block_size;
+	fragment_buffer_size = (FRAGMENT_BUFFER_DEFAULT << 20) / block_size;
+	data_buffer_size = (DATA_BUFFER_DEFAULT << 20) / block_size;
 	initialise_threads(fragment_buffer_size, data_buffer_size);
 
 	if((fragment_data = malloc(block_size)) == NULL)
