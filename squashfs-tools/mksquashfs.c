@@ -3585,7 +3585,7 @@ void read_recovery_data(char *recovery_file, char *destination_file)
 
 
 #define VERSION() \
-	printf("mksquashfs version 3.3-CVS (2008/05/06)\n");\
+	printf("mksquashfs version 4.0-CVS (2008/06/25)\n");\
 	printf("copyright (C) 2008 Phillip Lougher <phillip@lougher.demon.co.uk>\n\n"); \
 	printf("This program is free software; you can redistribute it and/or\n");\
 	printf("modify it under the terms of the GNU General Public License\n");\
@@ -4167,7 +4167,7 @@ restore_filesystem:
 	else {
 		squashfs_super_block sBlk_copy;
 
-		SQUASHFS_SWAP_SUPER_BLOCK((&sBlk), &sBlk_copy); 
+		//SQUASHFS_SWAP_SUPER_BLOCK((&sBlk), &sBlk_copy); 
 		write_bytes(fd, SQUASHFS_START, sizeof(squashfs_super_block), (char *) &sBlk_copy);
 	}
 

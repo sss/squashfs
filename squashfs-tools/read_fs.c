@@ -355,7 +355,7 @@ int read_super(int fd, squashfs_super_block *sBlk, int *be, char *source)
 		if(sBlk->s_magic == SQUASHFS_MAGIC_SWAP) {
 			squashfs_super_block sblk;
 			ERROR("Reading a different endian SQUASHFS filesystem on %s - ignoring -le/-be options\n", source);
-			SQUASHFS_SWAP_SUPER_BLOCK(&sblk, sBlk);
+			//SQUASHFS_SWAP_SUPER_BLOCK(&sblk, sBlk);
 			memcpy(sBlk, &sblk, sizeof(squashfs_super_block));
 			swap = 1;
 		} else  {
