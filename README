@@ -1,7 +1,5 @@
-CVS status:
+CVS status (devel-4_0 branch):
 
-CVS reflects squashfs3.3 with a sparse file fix in mksquashfs.  Plus
-parallelisation improvements to mksquashfs and unsquashfs.
-
-kernel-2.4 code is still squashfs3.1-r2.  Support for 2.4 kernels was
-experimentally dropped in squashfs3.2.
+New 4.0 disk layout.  Everything horribly broken, don't
+even think about generating a new 4.0 layout and mounting it,
+it will likely kernel oops horribly.
