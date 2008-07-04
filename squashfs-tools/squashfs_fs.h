@@ -228,22 +228,24 @@ struct meta_index {
 typedef long long		squashfs_block_t;
 typedef long long		squashfs_inode_t;
 
+#define COMPRESSION_ZLIB 1
+
 struct squashfs_super_block {
 	unsigned int		s_magic;
 	unsigned int		inodes;
 	unsigned int		mkfs_time /* time of filesystem creation */;
 	unsigned int		block_size;
 	unsigned int		fragments;
+	unsigned short		compression;
 	unsigned short		block_log;
 	unsigned short		flags;
 	unsigned short		no_uids;
-	unsigned short		no_guids;
 	unsigned short		s_major;
 	unsigned short		s_minor;
 	squashfs_inode_t	root_inode;
 	long long		bytes_used;
-	long long		uid_start;
-	long long		guid_start;
+	long long		uid_table_start;
+	long long		xattr_table_start;
 	long long		inode_table_start;
 	long long		directory_table_start;
 	long long		fragment_table_start;
@@ -300,6 +302,7 @@ struct squashfs_lreg_inode_header {
 	SQUASHFS_BASE_INODE_HEADER;
 	squashfs_block_t	start_block;
 	long long		file_size;
+	long long		xattr;
 	unsigned int		nlink;
 	unsigned int		fragment;
 	unsigned int		offset;
