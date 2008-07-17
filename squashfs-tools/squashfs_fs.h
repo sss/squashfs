@@ -53,8 +53,7 @@
 #define SQUASHFS_FILE_MAX_SIZE		1048576
 
 /* Max number of uids and gids */
-#define SQUASHFS_UIDS			256
-#define SQUASHFS_GUIDS			255
+#define SQUASHFS_IDS			65536
 
 /* Max length of filename (not 255) */
 #define SQUASHFS_NAME_LEN		256
@@ -187,6 +186,22 @@
 #define SQUASHFS_LOOKUP_BLOCK_BYTES(A)	(SQUASHFS_LOOKUP_BLOCKS(A) *\
 					sizeof(long long))
 
+/* uid lookup table defines */
+#define SQUASHFS_ID_BYTES(A)	((A) * sizeof(unsigned int))
+
+#define SQUASHFS_ID_BLOCK(A)		(SQUASHFS_ID_BYTES(A) / \
+						SQUASHFS_METADATA_SIZE)
+
+#define SQUASHFS_ID_BLOCK_OFFSET(A)		(SQUASHFS_ID_BYTES(A) % \
+						SQUASHFS_METADATA_SIZE)
+
+#define SQUASHFS_ID_BLOCKS(A)	((SQUASHFS_ID_BYTES(A) + \
+					SQUASHFS_METADATA_SIZE - 1) / \
+					SQUASHFS_METADATA_SIZE)
+
+#define SQUASHFS_ID_BLOCK_BYTES(A)	(SQUASHFS_ID_BLOCKS(A) *\
+					sizeof(long long))
+
 /* cached data constants for filesystem */
 #define SQUASHFS_CACHED_BLKS		8
 
@@ -239,12 +254,12 @@ struct squashfs_super_block {
 	unsigned short		compression;
 	unsigned short		block_log;
 	unsigned short		flags;
-	unsigned short		no_uids;
+	unsigned short		no_ids;
 	unsigned short		s_major;
 	unsigned short		s_minor;
 	squashfs_inode_t	root_inode;
 	long long		bytes_used;
-	long long		uid_table_start;
+	long long		id_table_start;
 	long long		xattr_table_start;
 	long long		inode_table_start;
 	long long		directory_table_start;
