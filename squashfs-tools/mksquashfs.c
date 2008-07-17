@@ -2513,7 +2513,7 @@ int write_file_blocks(squashfs_inode *inode, struct dir_ent *dir_ent, long long 
 	file_count ++;
 	total_bytes += read_size;
 
-	if(dir_ent->inode->nlink == 1 && read_size < ((long long) (1<<30) - 1))
+	if(dir_ent->inode->nlink == 1 && read_size < (1LL << 32) && start < (1LL << 32))
 		create_inode(inode, dir_ent, SQUASHFS_FILE_TYPE, read_size, start, blocks, block_list, fragment, NULL);
 	else
 		create_inode(inode, dir_ent, SQUASHFS_LREG_TYPE, read_size, start, blocks, block_list, fragment, NULL);
@@ -2634,7 +2634,7 @@ int write_file_blocks_dup(squashfs_inode *inode, struct dir_ent *dir_ent, long l
 	file_count ++;
 	total_bytes += read_size;
 
-	if(dir_ent->inode->nlink == 1 && read_size < ((long long) (1<<30) - 1))
+	if(dir_ent->inode->nlink == 1 && read_size < (1LL << 32) && start < (1LL << 32))
 		create_inode(inode, dir_ent, SQUASHFS_FILE_TYPE, read_size, start, blocks, block_listp, fragment, NULL);
 	else
 		create_inode(inode, dir_ent, SQUASHFS_LREG_TYPE, read_size, start, blocks, block_listp, fragment, NULL);
