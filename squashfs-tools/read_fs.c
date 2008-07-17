@@ -392,11 +392,10 @@ int read_super(int fd, squashfs_super_block *sBlk, int *be, char *source)
 	printf("\tBlock size %d\n", sBlk->block_size);
 	printf("\tNumber of fragments %d\n", sBlk->fragments);
 	printf("\tNumber of inodes %d\n", sBlk->inodes);
-	printf("\tNumber of uids %d\n", sBlk->no_uids);
-	printf("\tNumber of gids %d\n", sBlk->no_guids);
+	printf("\tNumber of ids %d\n", sBlk->no_ids);
 	TRACE("sBlk->inode_table_start %llx\n", sBlk->inode_table_start);
 	TRACE("sBlk->directory_table_start %llx\n", sBlk->directory_table_start);
-	TRACE("sBlk->uid_start %llx\n", sBlk->uid_start);
+	TRACE("sBlk->id_table_start %llx\n", sBlk->id_table_start);
 	TRACE("sBlk->fragment_table_start %llx\n", sBlk->fragment_table_start);
 	TRACE("sBlk->lookup_table_start %llx\n", sBlk->lookup_table_start);
 	printf("\n");
@@ -553,8 +552,7 @@ long long read_filesystem(char *root_name, int fd, squashfs_super_block *sBlk, c
 		char **data_cache, char **cdirectory_table, char **directory_data_cache,
 		unsigned int *last_directory_block, unsigned int *inode_dir_offset, unsigned int *inode_dir_file_size,
 		unsigned int *root_inode_size, unsigned int *inode_dir_start_block, int *file_count, int *sym_count,
-		int *dev_count, int *dir_count, int *fifo_count, int *sock_count, squashfs_uid *uids,
-		unsigned short *uid_count, squashfs_uid *guids, unsigned short *guid_count,
+		int *dev_count, int *dir_count, int *fifo_count, int *sock_count,
 		long long *uncompressed_file, unsigned int *uncompressed_inode, unsigned int *uncompressed_directory,
 		unsigned int *inode_dir_inode_number, unsigned int *inode_dir_parent_inode,
 		void (push_directory_entry)(char *, squashfs_inode, int, int), squashfs_fragment_entry **fragment_table,
@@ -631,6 +629,7 @@ long long read_filesystem(char *root_name, int fd, squashfs_super_block *sBlk, c
 		}
 		memcpy(*directory_data_cache, directory_table, *inode_dir_offset + *inode_dir_file_size);
 
+#if 0
 		if(!swap)
 			read_bytes(fd, sBlk->uid_start, sBlk->no_uids * sizeof(squashfs_uid), (char *) uids);
 		else {
@@ -650,6 +649,7 @@ long long read_filesystem(char *root_name, int fd, squashfs_super_block *sBlk, c
 		}
 		*uid_count = sBlk->no_uids;
 		*guid_count = sBlk->no_guids;
+#endif
 
 		free(inode_table);
 		free(directory_table);
