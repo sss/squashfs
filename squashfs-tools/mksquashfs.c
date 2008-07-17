@@ -120,8 +120,7 @@ int use_regex = FALSE;
 
 /* superblock attributes */
 int block_size = SQUASHFS_FILE_SIZE, block_log;
-unsigned short uid_count = 0, guid_count = 0;
-squashfs_uid uids[SQUASHFS_UIDS], guids[SQUASHFS_GUIDS];
+unsigned int id_count = 0;
 int block_offset;
 int file_count = 0, sym_count = 0, dev_count = 0, dir_count = 0, fifo_count = 0, sock_count = 0;
 
@@ -272,7 +271,7 @@ char *sdata_cache, *sdirectory_data_cache;
 long long sbytes, stotal_bytes;
 
 unsigned int sinode_bytes, scache_bytes, sdirectory_bytes,
-	sdirectory_cache_bytes, suid_count, sguid_count,
+	sdirectory_cache_bytes,
 	stotal_inode_bytes, stotal_directory_bytes,
 	sinode_count = 0, sfile_count, ssym_count, sdev_count,
 	sdir_count, sfifo_count, ssock_count, sdup_files;
@@ -335,6 +334,22 @@ struct buffer_list {
 	struct file_buffer *read_buffer;
 };
 
+/* in memory uid tables */
+#define ID_ENTRIES 256
+#define ID_HASH(id) (id & (ID_ENTRIES - 1))
+#define ISA_UID 1
+#define ISA_GID 2
+struct id {
+	unsigned int id;
+	int	index;
+	char	flags;
+	struct id *next;
+};
+struct id *id_hash_table[ID_ENTRIES];
+struct id *id_table[SQUASHFS_IDS], *sid_table[SQUASHFS_IDS];
+unsigned int uid_count = 0, guid_count = 0;
+unsigned int sid_count = 0, suid_count = 0, sguid_count = 0;
+
 struct cache *reader_buffer, *writer_buffer, *fragment_buffer;
 struct queue *to_reader, *from_reader, *to_writer, *from_writer, *from_deflate, *to_frag;
 pthread_t *thread, *deflator_thread, *frag_deflator_thread, progress_thread;
@@ -363,8 +378,7 @@ extern long long read_filesystem(char *root_name, int fd, squashfs_super_block *
 		char **data_cache, char **cdirectory_table, char **directory_data_cache,
 		unsigned int *last_directory_block, unsigned int *inode_dir_offset, unsigned int *inode_dir_file_size,
 		unsigned int *root_inode_size, unsigned int *inode_dir_start_block, int *file_count, int *sym_count,
-		int *dev_count, int *dir_count, int *fifo_count, int *sock_count, squashfs_uid *uids,
-		unsigned short *uid_count, squashfs_uid *guids, unsigned short *guid_count,
+		int *dev_count, int *dir_count, int *fifo_count, int *sock_count,
 		long long *uncompressed_file, unsigned int *uncompressed_inode, unsigned int *uncompressed_directory,
 		unsigned int *inode_dir_inode_number, unsigned int *inode_dir_parent_inode,
 		void (push_directory_entry)(char *, squashfs_inode, int, int),
@@ -378,6 +392,8 @@ struct file_info *add_non_dup(long long file_size, long long bytes, unsigned int
 extern void generate_file_priorities(struct dir_info *dir, int priority, struct stat *buf);
 extern struct priority_entry *priority_list[65536];
 void progress_bar(long long current, long long max, int columns);
+void restore_id_table();
+long long generic_write_table(int length, char *buffer, int uncompressed);
 
 
 struct queue *queue_init(int size)
@@ -714,8 +730,6 @@ void restorefs()
 	memcpy(directory_data_cache, sdirectory_data_cache, directory_cache_bytes = sdirectory_cache_bytes);
 	inode_bytes = sinode_bytes;
 	directory_bytes = sdirectory_bytes;
-	uid_count = suid_count;
-	guid_count = sguid_count;
 	total_bytes = stotal_bytes;
 	total_inode_bytes = stotal_inode_bytes;
 	total_directory_bytes = stotal_directory_bytes;
@@ -729,6 +743,7 @@ void restorefs()
 	dup_files = sdup_files;
 	fragments = sfragments;
 	fragment_size = 0;
+	restore_id_table();
 	longjmp(env, 1);
 }
 
@@ -1013,40 +1028,100 @@ long long write_directories()
 }
 
 
-unsigned int get_uid(squashfs_uid uid)
+long long write_id_table()
 {
+	unsigned int id_bytes = SQUASHFS_ID_BYTES(id_count);
+	char buffer[id_bytes];
+	unsigned int *p = (unsigned int *) buffer;
 	int i;
 
-	for(i = 0; (i < uid_count) && uids[i] != uid; i++);
-	if(i == uid_count) {
-		if(uid_count == SQUASHFS_UIDS) {
-			ERROR("Out of uids! - using uid 0 - probably not what's wanted!\n");
-			i = 0;
-		} else
-			uids[uid_count++] = uid;
+	TRACE("write_id_table: ids %d, id_bytes %d\n", id_count, id_bytes);
+	for(i = 0; i < id_count; i++, p++) {
+		TRACE("write_id_table: id index %d, id %d", i, id_table[i]->id);
+		if(!swap)
+			memcpy(p, &id_table[i]->id, sizeof(unsigned int));
+		else
+			SQUASHFS_SWAP_INTS((&id_table[i]->id), p, 1);
 	}
 
-	return i;
+	return generic_write_table(id_bytes, buffer, 1);
 }
 
 
-unsigned int get_guid(squashfs_uid uid, squashfs_uid guid)
+struct id *get_id(squashfs_id id)
 {
-	int i;
+	int hash = ID_HASH(id);
+	struct id *entry = id_hash_table[hash];
 
-	if(uid == guid)
-		return SQUASHFS_GUIDS;
+	for(; entry; entry = entry->next)
+		if(entry->id == id)
+			break;
 
-	for(i = 0; (i < guid_count) && guids[i] != guid; i++);
-	if(i == guid_count) {
-		if(guid_count == SQUASHFS_GUIDS) {
-			ERROR("Out of gids! - using gid 0 - probably not what's wanted!\n");
-			return SQUASHFS_GUIDS;
-		} else
-			guids[guid_count++] = guid;
+	return entry;
+}
+
+
+struct id *create_id(squashfs_id id, int index)
+{
+	int hash = ID_HASH(id);
+	struct id *entry = malloc(sizeof(struct id));
+	if(entry == NULL)
+		BAD_ERROR("Out of memory in create_id\n");
+	entry->id = id;
+	entry->index = index;
+	entry->flags = 0;
+	entry->next = id_hash_table[hash];
+	id_hash_table[hash] = entry;
+	id_table[entry->index] = entry;
+	return entry;
+}
+
+
+unsigned int get_uid(squashfs_id uid)
+{
+	struct id *entry = get_id(uid);
+
+	if(entry == NULL) {
+		if(id_count == SQUASHFS_IDS)
+			BAD_ERROR("Out of uids!\n");
+		entry = create_id(uid, id_count ++);
 	}
 
-	return i;
+	if((entry->flags & ISA_UID) == 0) {
+		entry->flags |= ISA_UID;
+		uid_count ++;
+	}
+
+	return entry->index;
+}
+
+
+unsigned int get_guid(squashfs_id guid)
+{
+	struct id *entry = get_id(guid);
+
+	if(entry == NULL) {
+		if(id_count == SQUASHFS_IDS)
+			BAD_ERROR("Out of gids!\n");
+		entry = create_id(guid, id_count ++);
+	}
+
+	if((entry->flags & ISA_GID) == 0) {
+		entry->flags |= ISA_GID;
+		guid_count ++;
+	}
+
+	return entry->index;
+}
+
+
+void save_id_table()
+{
+}
+
+
+void restore_id_table()
+{
 }
 
 
@@ -1060,9 +1135,9 @@ int create_inode(squashfs_inode *i_no, struct dir_ent *dir_ent, int type, long l
 	int inode_number = (type == SQUASHFS_LDIR_TYPE || type == SQUASHFS_DIR_TYPE) ? dir_ent->inode->inode_number : dir_ent->inode->inode_number + dir_inode_no;
 
 	base->mode = SQUASHFS_MODE(buf->st_mode);
-	base->uid = get_uid((squashfs_uid) global_uid == -1 ? buf->st_uid : global_uid);
+	base->uid = get_uid((squashfs_id) global_uid == -1 ? buf->st_uid : global_uid);
 	base->inode_type = type;
-	base->guid = get_guid((squashfs_uid) global_uid == -1 ? buf->st_uid : global_uid, (squashfs_uid) global_gid == -1 ? buf->st_gid : global_gid);
+	base->guid = get_guid((squashfs_id) global_gid == -1 ? buf->st_gid : global_gid);
 	base->mtime = buf->st_mtime;
 	base->inode_number = inode_number;
 
@@ -3585,7 +3660,7 @@ void read_recovery_data(char *recovery_file, char *destination_file)
 
 
 #define VERSION() \
-	printf("mksquashfs version 4.0-CVS (2008/06/25)\n");\
+	printf("mksquashfs version 4.0-CVS (2008/07/16)\n");\
 	printf("copyright (C) 2008 Phillip Lougher <phillip@lougher.demon.co.uk>\n\n"); \
 	printf("This program is free software; you can redistribute it and/or\n");\
 	printf("modify it under the terms of the GNU General Public License\n");\
@@ -3987,7 +4062,6 @@ printOptions:
 				&directory_table, &directory_data_cache, &last_directory_block, &inode_dir_offset,
 				&inode_dir_file_size, &root_inode_size, &inode_dir_start_block,
 				&file_count, &sym_count, &dev_count, &dir_count, &fifo_count, &sock_count,
-				(squashfs_uid *) uids, &uid_count, (squashfs_uid *) guids, &guid_count,
 				&total_bytes, &total_inode_bytes, &total_directory_bytes, &inode_dir_inode_number,
 				&inode_dir_parent_inode, add_old_root_entry, &fragment_table, &inode_lookup_table)) == 0) {
 			ERROR("Failed to read existing filesystem - will not overwrite - ABORTING!\n");
@@ -4017,8 +4091,6 @@ printOptions:
 		memcpy(sdirectory_data_cache, directory_data_cache + compressed_data, sdirectory_cache_bytes);
 		sinode_bytes = root_inode_start;
 		sdirectory_bytes = last_directory_block;
-		suid_count = uid_count;
-		sguid_count = guid_count;
 		stotal_bytes = total_bytes;
 		stotal_inode_bytes = total_inode_bytes;
 		stotal_directory_bytes = total_directory_bytes + compressed_data;
@@ -4029,6 +4101,7 @@ printOptions:
 		sfifo_count = fifo_count;
 		ssock_count = sock_count;
 		sdup_files = dup_files;
+		save_id_table();
 		write_recovery_data(&sBlk);
 		restore = TRUE;
 		if(setjmp(env))
@@ -4130,35 +4203,8 @@ restore_filesystem:
 	if(exportable)
 		TRACE("sBlk->lookup_table_start 0x%llx\n", sBlk.lookup_table_start);
 
-	sBlk.no_uids = uid_count;
-	if(sBlk.no_uids) {
-		if(!swap)
-			write_bytes(fd, bytes, uid_count * sizeof(squashfs_uid), (char *) uids);
-		else {
-			squashfs_uid uids_copy[uid_count];
-
-			SQUASHFS_SWAP_DATA(uids, uids_copy, uid_count, sizeof(squashfs_uid) * 8);
-			write_bytes(fd, bytes, uid_count * sizeof(squashfs_uid), (char *) uids_copy);
-		}
-		sBlk.uid_start = bytes;
-		bytes += uid_count * sizeof(squashfs_uid);
-	} else
-		sBlk.uid_start = 0;
-
-	sBlk.no_guids = guid_count;
-	if(sBlk.no_guids) {
-		if(!swap)
-			write_bytes(fd, bytes, guid_count * sizeof(squashfs_uid), (char *) guids);
-		else {
-			squashfs_uid guids_copy[guid_count];
-
-			SQUASHFS_SWAP_DATA(guids, guids_copy, guid_count, sizeof(squashfs_uid) * 8);
-			write_bytes(fd, bytes, guid_count * sizeof(squashfs_uid), (char *) guids_copy);
-		}
-		sBlk.guid_start = bytes;
-		bytes += guid_count * sizeof(squashfs_uid);
-	} else
-		sBlk.guid_start = 0;
+	sBlk.no_ids = id_count;
+	sBlk.id_table_start = write_id_table();
 
 	sBlk.bytes_used = bytes;
 
@@ -4213,19 +4259,23 @@ restore_filesystem:
 	printf("Number of fifo nodes %d\n", fifo_count);
 	printf("Number of socket nodes %d\n", sock_count);
 	printf("Number of directories %d\n", dir_count);
+	printf("Number of ids (unique uids + gids) %d\n", id_count);
 	printf("Number of uids %d\n", uid_count);
 
-	for(i = 0; i < uid_count; i++) {
-		int uid = uids[i];
-		struct passwd *user = getpwuid(uid);
-		printf("\t%s (%d)\n", user == NULL ? "unknown" : user->pw_name, uids[i]);
+	for(i = 0; i < id_count; i++) {
+		if(id_table[i]->flags & ISA_UID) {
+			struct passwd *user = getpwuid(id_table[i]->id);
+			printf("\t%s (%d)\n", user == NULL ? "unknown" : user->pw_name, id_table[i]->id);
+		}
 	}
 
 	printf("Number of gids %d\n", guid_count);
 
-	for(i = 0; i < guid_count; i++) {
-		struct group *group = getgrgid(guids[i]);
-		printf("\t%s (%d)\n", group == NULL ? "unknown" : group->gr_name, guids[i]);
+	for(i = 0; i < id_count; i++) {
+		if(id_table[i]->flags & ISA_GID) {
+			struct group *group = getgrgid(id_table[i]->id);
+			printf("\t%s (%d)\n", group == NULL ? "unknown" : group->gr_name, id_table[i]->id);
+		}
 	}
 
 	return 0;
