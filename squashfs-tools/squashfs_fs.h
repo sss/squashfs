@@ -1,10 +1,9 @@
 #ifndef SQUASHFS_FS
 #define SQUASHFS_FS
-
 /*
  * Squashfs
  *
- * Copyright (c) 2002, 2003, 2004, 2005, 2006, 2007
+ * Copyright (c) 2002, 2003, 2004, 2005, 2006, 2007, 2008
  * Phillip Lougher <phillip@lougher.demon.co.uk>
  *
  * This program is free software; you can redistribute it and/or
@@ -28,13 +27,6 @@
 #define CONFIG_SQUASHFS_2_0_COMPATIBILITY
 #endif
 
-#ifdef	CONFIG_SQUASHFS_VMALLOC
-#define SQUASHFS_ALLOC(a)		vmalloc(a)
-#define SQUASHFS_FREE(a)		vfree(a)
-#else
-#define SQUASHFS_ALLOC(a)		kmalloc(a, GFP_KERNEL)
-#define SQUASHFS_FREE(a)		kfree(a)
-#endif
 #define SQUASHFS_CACHED_FRAGMENTS	CONFIG_SQUASHFS_FRAGMENT_CACHE_SIZE	
 #define SQUASHFS_MAJOR			4
 #define SQUASHFS_MINOR			0
