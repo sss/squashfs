@@ -23,8 +23,10 @@
  * squashfs_fs.h
  */
 
+#if 0
 #ifndef CONFIG_SQUASHFS_2_0_COMPATIBILITY
 #define CONFIG_SQUASHFS_2_0_COMPATIBILITY
+#endif
 #endif
 
 #define SQUASHFS_CACHED_FRAGMENTS	CONFIG_SQUASHFS_FRAGMENT_CACHE_SIZE	
@@ -309,11 +311,11 @@ struct squashfs_lreg_inode_header {
 	SQUASHFS_BASE_INODE_HEADER;
 	squashfs_block_t	start_block;
 	long long		file_size;
-	long long		xattr;
+	long long		sparse;
 	unsigned int		nlink;
 	unsigned int		fragment;
 	unsigned int		offset;
-	unsigned int		blocks;
+	unsigned int		xattr;
 	unsigned short		block_list[0];
 };
 
@@ -574,6 +576,7 @@ extern int squashfs_uncompress_exit(void);
 
 #define SQUASHFS_SWAP_FRAGMENT_INDEXES(s, d, n) SQUASHFS_SWAP_LONG_LONGS(s, d, n)
 #define SQUASHFS_SWAP_LOOKUP_BLOCKS(s, d, n) SQUASHFS_SWAP_LONG_LONGS(s, d, n)
+#define SQUASHFS_SWAP_ID_BLOCKS(s, d, n) SQUASHFS_SWAP_LONG_LONGS(s, d, n)
 
 #ifdef CONFIG_SQUASHFS_1_0_COMPATIBILITY
 
