@@ -842,7 +842,8 @@ static int squashfs_read_inode(struct inode *i, squashfs_inode_t inode)
 			i->i_size = inodep->file_size;
 			i->i_fop = &generic_ro_fops;
 			i->i_mode |= S_IFREG;
-			i->i_blocks = ((i->i_size - 1) >> 9) + 1;
+			i->i_blocks = ((inodep->file_size - inodep->sparse - 1) >> 9) + 1;
+				
 			SQUASHFS_I(i)->u.s1.fragment_start_block = frag_blk;
 			SQUASHFS_I(i)->u.s1.fragment_size = frag_size;
 			SQUASHFS_I(i)->u.s1.fragment_offset = inodep->offset;
@@ -2141,7 +2142,7 @@ static int __init init_squashfs_fs(void)
 	if (err)
 		goto out;
 
-	printk(KERN_INFO "squashfs: version 4.0-CVS (2008/07/21) "
+	printk(KERN_INFO "squashfs: version 4.0-CVS (2008/07/27) "
 		"Phillip Lougher\n");
 
 	err = register_filesystem(&squashfs_fs_type);
