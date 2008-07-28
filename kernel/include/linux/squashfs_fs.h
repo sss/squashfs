@@ -311,11 +311,11 @@ struct squashfs_lreg_inode_header {
 	SQUASHFS_BASE_INODE_HEADER;
 	squashfs_block_t	start_block;
 	long long		file_size;
-	long long		xattr;
+	long long		sparse;
 	unsigned int		nlink;
 	unsigned int		fragment;
 	unsigned int		offset;
-	unsigned int		blocks;
+	unsigned int		xattr;
 	unsigned short		block_list[0];
 };
 
