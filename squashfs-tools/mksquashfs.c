@@ -1125,7 +1125,7 @@ void restore_id_table()
 }
 
 
-int create_inode(squashfs_inode *i_no, struct dir_ent *dir_ent, int type, long long byte_size, long long start_block, unsigned int offset, unsigned int *block_list, struct fragment *fragment, struct directory *dir_in)
+int create_inode(squashfs_inode *i_no, struct dir_ent *dir_ent, int type, long long byte_size, long long start_block, unsigned int offset, unsigned int *block_list, struct fragment *fragment, struct directory *dir_in, unsigned int sparse)
 {
 	struct stat *buf = &dir_ent->inode->buf;
 	squashfs_inode_header inode_header;
@@ -1174,6 +1174,7 @@ int create_inode(squashfs_inode *i_no, struct dir_ent *dir_ent, int type, long l
 		reg->start_block = start_block;
 		reg->fragment = fragment->index;
 		reg->offset = fragment->offset;
+		reg->sparse = sparse;
 		if(!swap) {
 			memcpy(inodep, reg, sizeof(*reg));
 			memcpy(inodep->block_list, block_list, offset * sizeof(unsigned int));
@@ -1454,9 +1455,9 @@ void write_dir(squashfs_inode *inode, struct dir_info *dir_info, struct director
 	}
 
 	if(dir_info->dir_is_ldir)
-		create_inode(inode, dir_info->dir_ent, SQUASHFS_LDIR_TYPE, dir_size + 3, directory_block, directory_offset, NULL, NULL, dir);
+		create_inode(inode, dir_info->dir_ent, SQUASHFS_LDIR_TYPE, dir_size + 3, directory_block, directory_offset, NULL, NULL, dir, 0);
 	else
-		create_inode(inode, dir_info->dir_ent, SQUASHFS_DIR_TYPE, dir_size + 3, directory_block, directory_offset, NULL, NULL, NULL);
+		create_inode(inode, dir_info->dir_ent, SQUASHFS_DIR_TYPE, dir_size + 3, directory_block, directory_offset, NULL, NULL, NULL, 0);
 
 #ifdef SQUASHFS_TRACE
 	if(!swap) {
@@ -2048,11 +2049,7 @@ again:
 	}
 
 	file_buffer->fragment = (file_buffer->block == frag_block);
-
-	if(file_buffer->fragment)
-		queue_put(from_deflate, file_buffer);
-	else
-		queue_put(from_reader, file_buffer);
+	queue_put(from_reader, file_buffer);
 
 	close(file);
 
@@ -2190,20 +2187,26 @@ void *deflator(void *arg)
 
 	while(1) {
 		struct file_buffer *file_buffer = queue_get(from_reader);
-		struct file_buffer *write_buffer = cache_get(writer_buffer, 0, 0);
+		struct file_buffer *write_buffer;
 
-		if(sparse_files && all_zero(file_buffer)) 
-			write_buffer->c_byte = 0;
-		else
+		if(sparse_files && all_zero(file_buffer)) { 
+			file_buffer->c_byte = 0;
+			queue_put(from_deflate, file_buffer);
+		} else if(file_buffer->fragment) {
+			file_buffer->c_byte = file_buffer->size;
+			queue_put(from_deflate, file_buffer);
+		} else {
+			write_buffer = cache_get(writer_buffer, 0, 0);
 			write_buffer->c_byte = mangle2(&stream, write_buffer->data, file_buffer->data, file_buffer->size, block_size, noD, 1);
-		write_buffer->sequence = file_buffer->sequence;
-		write_buffer->file_size = file_buffer->file_size;
-		write_buffer->block = file_buffer->block;
-		write_buffer->size = SQUASHFS_COMPRESSED_SIZE_BLOCK(write_buffer->c_byte);
-		write_buffer->fragment = FALSE;
-		write_buffer->error = FALSE;
-		cache_block_put(file_buffer);
-		queue_put(from_deflate, write_buffer);
+			write_buffer->sequence = file_buffer->sequence;
+			write_buffer->file_size = file_buffer->file_size;
+			write_buffer->block = file_buffer->block;
+			write_buffer->size = SQUASHFS_COMPRESSED_SIZE_BLOCK(write_buffer->c_byte);
+			write_buffer->fragment = FALSE;
+			write_buffer->error = FALSE;
+			cache_block_put(file_buffer);
+			queue_put(from_deflate, write_buffer);
+		}
 	}
 }
 
@@ -2377,9 +2380,9 @@ void write_file_empty(squashfs_inode *inode, struct dir_ent *dir_ent, int *dupli
 	file_count ++;
 	*duplicate_file = FALSE;
 	if(dir_ent->inode->nlink == 1)
-		create_inode(inode, dir_ent, SQUASHFS_FILE_TYPE, 0, 0, 0, NULL, &empty_fragment, NULL);
+		create_inode(inode, dir_ent, SQUASHFS_FILE_TYPE, 0, 0, 0, NULL, &empty_fragment, NULL, 0);
 	else
-		create_inode(inode, dir_ent, SQUASHFS_LREG_TYPE, 0, 0, 0, NULL, &empty_fragment, NULL);
+		create_inode(inode, dir_ent, SQUASHFS_LREG_TYPE, 0, 0, 0, NULL, &empty_fragment, NULL, 0);
 }
 
 
@@ -2407,9 +2410,9 @@ void write_file_frag_dup(squashfs_inode *inode, struct dir_ent *dir_ent, int siz
 	inc_progress_bar();
 
 	if(dir_ent->inode->nlink == 1)
-		create_inode(inode, dir_ent, SQUASHFS_FILE_TYPE, size, 0, 0, NULL, fragment, NULL);
+		create_inode(inode, dir_ent, SQUASHFS_FILE_TYPE, size, 0, 0, NULL, fragment, NULL, 0);
 	else
-		create_inode(inode, dir_ent, SQUASHFS_LREG_TYPE, size, 0, 0, NULL, fragment, NULL);
+		create_inode(inode, dir_ent, SQUASHFS_LREG_TYPE, size, 0, 0, NULL, fragment, NULL, 0);
 }
 
 
@@ -2440,32 +2443,25 @@ void write_file_frag(squashfs_inode *inode, struct dir_ent *dir_ent, int size, s
 	inc_progress_bar();
 
 	if(dir_ent->inode->nlink == 1)
-		create_inode(inode, dir_ent, SQUASHFS_FILE_TYPE, size, 0, 0, NULL, fragment, NULL);
+		create_inode(inode, dir_ent, SQUASHFS_FILE_TYPE, size, 0, 0, NULL, fragment, NULL, 0);
 	else
-		create_inode(inode, dir_ent, SQUASHFS_LREG_TYPE, size, 0, 0, NULL, fragment, NULL);
+		create_inode(inode, dir_ent, SQUASHFS_LREG_TYPE, size, 0, 0, NULL, fragment, NULL, 0);
 
 	return;
 }
 
 
-int write_file_blocks(squashfs_inode *inode, struct dir_ent *dir_ent, long long read_size, struct file_buffer *reader_buffer, int *duplicate_file)
+int write_file_blocks(squashfs_inode *inode, struct dir_ent *dir_ent, long long read_size, struct file_buffer *read_buffer, int *duplicate_file)
 {
-	int block;
-	unsigned int frag_bytes;
 	long long file_bytes, start;
 	struct fragment *fragment;
-	int blocks = (read_size + block_size - 1) >> block_log;
 	unsigned int *block_list;
-	struct file_buffer *read_buffer;
-	int status;
+	int block, status;
+	int blocks = (read_size + block_size - 1) >> block_log;
+	long long sparse = 0;
+	struct file_buffer *fragment_buffer = NULL;
 
 	*duplicate_file = FALSE;
-
-	if(!no_fragments && always_use_fragments) {
-		blocks = read_size >> block_log;
-		frag_bytes = read_size % block_size;
-	} else
-		frag_bytes = 0;
 
 	if((block_list = malloc(blocks * sizeof(unsigned int))) == NULL)
 		BAD_ERROR("Out of memory allocating block_list\n");
@@ -2474,49 +2470,54 @@ int write_file_blocks(squashfs_inode *inode, struct dir_ent *dir_ent, long long 
 
 	file_bytes = 0;
 	start = bytes;
-	for(block = 0; block < blocks; block ++) {
-		if(reader_buffer) {
-			read_buffer = reader_buffer;
-			reader_buffer = NULL;
+	for(block = 0; block < blocks;) {
+		if(read_buffer->fragment && read_buffer->c_byte) {
+			fragment_buffer = read_buffer;
+			blocks = read_size >> block_log;
 		} else {
+			block_list[block] = read_buffer->c_byte;
+			if(read_buffer->c_byte) {
+				read_buffer->block = bytes;
+				bytes += read_buffer->size;
+				cache_rehash(read_buffer, read_buffer->block);
+				file_bytes += read_buffer->size;
+				queue_put(to_writer, read_buffer);
+			} else {
+				sparse += read_buffer->size;
+				cache_block_put(read_buffer);
+			}
+		}
+		inc_progress_bar();
+
+		if(++block < blocks) {
 			read_buffer = get_file_buffer(from_deflate);
 			if(read_buffer->error)
 				goto read_err;
 		}
-
-		block_list[block] = read_buffer->c_byte;
-		if(read_buffer->c_byte) {
-			read_buffer->block = bytes;
-			bytes += read_buffer->size;
-			cache_rehash(read_buffer, read_buffer->block);
-			file_bytes += read_buffer->size;
-			queue_put(to_writer, read_buffer);
-		} else
-			cache_block_put(read_buffer);
-		inc_progress_bar();
 	}
 
-	if(frag_bytes != 0) {
-		read_buffer = get_file_buffer(from_deflate);
-		if(read_buffer->error)
-			goto read_err;
-		inc_progress_bar();
-	} else
-		read_buffer = NULL;
-
 	unlock_fragments();
-	fragment = get_and_fill_fragment(read_buffer);
-	cache_block_put(read_buffer);
+	fragment = get_and_fill_fragment(fragment_buffer);
+	cache_block_put(fragment_buffer);
 
 	if(duplicate_checking)
 		add_non_dup(read_size, file_bytes, block_list, start, fragment, 0, 0, FALSE);
 	file_count ++;
 	total_bytes += read_size;
 
-	if(dir_ent->inode->nlink == 1 && read_size < (1LL << 32) && start < (1LL << 32))
-		create_inode(inode, dir_ent, SQUASHFS_FILE_TYPE, read_size, start, blocks, block_list, fragment, NULL);
+	/* sparse count is needed to ensure squashfs correctly reports a
+ 	 * a smaller block count on stat calls to sparse files.  This is
+ 	 * to ensure intelligent applications like cp correctly handle the
+ 	 * file as a sparse file.  If the file in the original filesystem isn't
+ 	 * stored as a sparse file then still store it sparsely in squashfs, but
+ 	 * report it as non-sparse on stat calls to preserve semantics */
+	if(sparse && (dir_ent->inode->buf.st_blocks << 9) >= read_size)
+		sparse = 0;
+
+	if(dir_ent->inode->nlink == 1 && read_size < (1LL << 32) && start < (1LL << 32) && sparse == 0)
+		create_inode(inode, dir_ent, SQUASHFS_FILE_TYPE, read_size, start, blocks, block_list, fragment, NULL, 0);
 	else
-		create_inode(inode, dir_ent, SQUASHFS_LREG_TYPE, read_size, start, blocks, block_list, fragment, NULL);
+		create_inode(inode, dir_ent, SQUASHFS_LREG_TYPE, read_size, start, blocks, block_list, fragment, NULL, sparse);
 
 	if(duplicate_checking == FALSE)
 		free(block_list);
@@ -2541,24 +2542,18 @@ read_err:
 }
 
 
-int write_file_blocks_dup(squashfs_inode *inode, struct dir_ent *dir_ent, long long read_size, struct file_buffer *reader_buffer, int *duplicate_file)
+int write_file_blocks_dup(squashfs_inode *inode, struct dir_ent *dir_ent, long long read_size, struct file_buffer *read_buffer, int *duplicate_file)
 {
 	int block, thresh;
-	unsigned int frag_bytes;
 	long long file_bytes, start;
 	struct fragment *fragment;
 	struct file_info *dupl_ptr;
 	int blocks = (read_size + block_size - 1) >> block_log;
 	unsigned int *block_list, *block_listp;
-	struct file_buffer *read_buffer;
 	struct buffer_list *buffer_list;
 	int status, num_locked_fragments;
-
-	if(!no_fragments && always_use_fragments) {
-		blocks = read_size >> block_log;
-		frag_bytes = read_size % block_size;
-	} else
-		frag_bytes = 0;
+	long long sparse = 0;
+	struct file_buffer *fragment_buffer = NULL;
 
 	if((block_list = malloc(blocks * sizeof(unsigned int))) == NULL)
 		BAD_ERROR("Out of memory allocating block_list\n");
@@ -2572,43 +2567,41 @@ int write_file_blocks_dup(squashfs_inode *inode, struct dir_ent *dir_ent, long l
 	file_bytes = 0;
 	start = bytes;
 	thresh = blocks > (writer_buffer_size - num_locked_fragments) ? blocks - (writer_buffer_size - num_locked_fragments): 0;
-	for(block = 0; block < blocks; block ++) {
-		if(reader_buffer) {
-			read_buffer = reader_buffer;
-			reader_buffer = NULL;
-		 } else {
+
+	for(block = 0; block < blocks;) {
+		if(read_buffer->fragment && read_buffer->c_byte) {
+			fragment_buffer = read_buffer;
+			blocks = read_size >> block_log;
+		} else {
+			block_list[block] = read_buffer->c_byte;
+
+			if(read_buffer->c_byte) {
+				buffer_list[block].start = bytes;
+				buffer_list[block].size = read_buffer->size;
+				read_buffer->block = bytes;
+				bytes += read_buffer->size;
+				file_bytes += read_buffer->size;
+				cache_rehash(read_buffer, read_buffer->block);
+				if(block < thresh) {
+					buffer_list[block].read_buffer = NULL;
+					queue_put(to_writer, read_buffer);
+				} else
+					buffer_list[block].read_buffer = read_buffer;
+			} else {
+				buffer_list[block].size = 0;
+				buffer_list[block].read_buffer = NULL;
+				sparse += read_buffer->size;
+				cache_block_put(read_buffer);
+			}
+		}
+		inc_progress_bar();
+
+		if(++block < blocks) {
 			read_buffer = get_file_buffer(from_deflate);
 			if(read_buffer->error)
 				goto read_err;
 		}
-
-		block_list[block] = read_buffer->c_byte;
-		buffer_list[block].start = bytes;
-		buffer_list[block].size = read_buffer->size;
-
-		if(read_buffer->c_byte) {
-			read_buffer->block = bytes;
-			bytes += read_buffer->size;
-			cache_rehash(read_buffer, read_buffer->block);
-			file_bytes += read_buffer->size;
-			if(block < thresh) {
-				buffer_list[block].read_buffer = NULL;
-				queue_put(to_writer, read_buffer);
-			} else
-				buffer_list[block].read_buffer = read_buffer;
-		} else {
-			buffer_list[block].read_buffer = NULL;
-			cache_block_put(read_buffer);
-		}
-		inc_progress_bar();
 	}
-
-	if(frag_bytes != 0) {
-		read_buffer = get_file_buffer(from_deflate);
-		if(read_buffer->error)
-			goto read_err;
-	} else
-		read_buffer = NULL;
 
 	dupl_ptr = duplicate(read_size, file_bytes, &block_listp, &start, &fragment, read_buffer, buffer_list, blocks, 0, 0, FALSE);
 
@@ -2617,7 +2610,7 @@ int write_file_blocks_dup(squashfs_inode *inode, struct dir_ent *dir_ent, long l
 		for(block = thresh; block < blocks; block ++)
 			if(buffer_list[block].read_buffer)
 				queue_put(to_writer, buffer_list[block].read_buffer);
-		fragment = get_and_fill_fragment(read_buffer);
+		fragment = get_and_fill_fragment(fragment_buffer);
 		dupl_ptr->fragment = fragment;
 	} else {
 		*duplicate_file = TRUE;
@@ -2629,15 +2622,24 @@ int write_file_blocks_dup(squashfs_inode *inode, struct dir_ent *dir_ent, long l
 	}
 
 	unlock_fragments();
-	cache_block_put(read_buffer);
+	cache_block_put(fragment_buffer);
 	free(buffer_list);
 	file_count ++;
 	total_bytes += read_size;
 
-	if(dir_ent->inode->nlink == 1 && read_size < (1LL << 32) && start < (1LL << 32))
-		create_inode(inode, dir_ent, SQUASHFS_FILE_TYPE, read_size, start, blocks, block_listp, fragment, NULL);
+	/* sparse count is needed to ensure squashfs correctly reports a
+ 	 * a smaller block count on stat calls to sparse files.  This is
+ 	 * to ensure intelligent applications like cp correctly handle the
+ 	 * file as a sparse file.  If the file in the original filesystem isn't
+ 	 * stored as a sparse file then still store it sparsely in squashfs, but
+ 	 * report it as non-sparse on stat calls to preserve semantics */
+	if(sparse && (dir_ent->inode->buf.st_blocks << 9) >= read_size)
+		sparse = 0;
+
+	if(dir_ent->inode->nlink == 1 && read_size < (1LL << 32) && start < (1LL << 32) && sparse == 0)
+		create_inode(inode, dir_ent, SQUASHFS_FILE_TYPE, read_size, start, blocks, block_listp, fragment, NULL, 0);
 	else
-		create_inode(inode, dir_ent, SQUASHFS_LREG_TYPE, read_size, start, blocks, block_listp, fragment, NULL);
+		create_inode(inode, dir_ent, SQUASHFS_LREG_TYPE, read_size, start, blocks, block_listp, fragment, NULL, sparse);
 
 	if(*duplicate_file == TRUE)
 		free(block_list);
@@ -2684,7 +2686,7 @@ again:
 	if(read_size == 0) {
 		write_file_empty(inode, dir_ent, duplicate_file);
 		cache_block_put(read_buffer);
-	} else if(!no_fragments && (read_size < block_size))
+	} else if(read_buffer->fragment && read_buffer->c_byte)
 		write_file_frag(inode, dir_ent, read_size, read_buffer, duplicate_file);
 	else if(pre_duplicate(read_size))
 		status = write_file_blocks_dup(inode, dir_ent, read_size, read_buffer, duplicate_file);
@@ -3096,35 +3098,35 @@ void dir_scan2(squashfs_inode *inode, struct dir_info *dir_info)
 
 				case S_IFLNK:
 					squashfs_type = SQUASHFS_SYMLINK_TYPE;
-					create_inode(inode, dir_ent, squashfs_type, 0, 0, 0, NULL, NULL, NULL);
+					create_inode(inode, dir_ent, squashfs_type, 0, 0, 0, NULL, NULL, NULL, 0);
 					INFO("symbolic link %s inode 0x%llx\n", dir_name, *inode);
 					sym_count ++;
 					break;
 
 				case S_IFCHR:
 					squashfs_type = SQUASHFS_CHRDEV_TYPE;
-					create_inode(inode, dir_ent, squashfs_type, 0, 0, 0, NULL, NULL, NULL);
+					create_inode(inode, dir_ent, squashfs_type, 0, 0, 0, NULL, NULL, NULL, 0);
 					INFO("character device %s inode 0x%llx\n", dir_name, *inode);
 					dev_count ++;
 					break;
 
 				case S_IFBLK:
 					squashfs_type = SQUASHFS_BLKDEV_TYPE;
-					create_inode(inode, dir_ent, squashfs_type, 0, 0, 0, NULL, NULL, NULL);
+					create_inode(inode, dir_ent, squashfs_type, 0, 0, 0, NULL, NULL, NULL, 0);
 					INFO("block device %s inode 0x%llx\n", dir_name, *inode);
 					dev_count ++;
 					break;
 
 				case S_IFIFO:
 					squashfs_type = SQUASHFS_FIFO_TYPE;
-					create_inode(inode, dir_ent, squashfs_type, 0, 0, 0, NULL, NULL, NULL);
+					create_inode(inode, dir_ent, squashfs_type, 0, 0, 0, NULL, NULL, NULL, 0);
 					INFO("fifo %s inode 0x%llx\n", dir_name, *inode);
 					fifo_count ++;
 					break;
 
 				case S_IFSOCK:
 					squashfs_type = SQUASHFS_SOCKET_TYPE;
-					create_inode(inode, dir_ent, squashfs_type, 0, 0, 0, NULL, NULL, NULL);
+					create_inode(inode, dir_ent, squashfs_type, 0, 0, 0, NULL, NULL, NULL, 0);
 					INFO("unix domain socket %s inode 0x%llx\n", dir_name, *inode);
 					sock_count ++;
 					break;
@@ -3660,7 +3662,7 @@ void read_recovery_data(char *recovery_file, char *destination_file)
 
 
 #define VERSION() \
-	printf("mksquashfs version 4.0-CVS (2008/07/16)\n");\
+	printf("mksquashfs version 4.0-CVS (2008/07/27)\n");\
 	printf("copyright (C) 2008 Phillip Lougher <phillip@lougher.demon.co.uk>\n\n"); \
 	printf("This program is free software; you can redistribute it and/or\n");\
 	printf("modify it under the terms of the GNU General Public License\n");\
