@@ -1873,7 +1873,7 @@ int pre_duplicate_frag(long long file_size, unsigned short checksum)
 	struct file_info *dupl_ptr = dupl[DUP_HASH(file_size)];
 
 	for(; dupl_ptr; dupl_ptr = dupl_ptr->next)
-		if(dupl_ptr->file_size == file_size) {
+		if(file_size == dupl_ptr->file_size && file_size == dupl_ptr->fragment->size) {
 			if(dupl_ptr->checksum_flag == FALSE) {
 				struct file_buffer *frag_buffer = get_fragment(dupl_ptr->fragment);
 				dupl_ptr->checksum = get_checksum_disk(dupl_ptr->start, dupl_ptr->bytes, dupl_ptr->block_list);
@@ -2033,6 +2033,7 @@ again:
 
 		file_buffer->block = count;
 		file_buffer->error = FALSE;
+		file_buffer->fragment = (file_buffer->block == frag_block);
 
 		bytes += byte;
 		count ++;
@@ -2048,7 +2049,6 @@ again:
 			goto restat;
 	}
 
-	file_buffer->fragment = (file_buffer->block == frag_block);
 	queue_put(from_reader, file_buffer);
 
 	close(file);
@@ -2603,7 +2603,7 @@ int write_file_blocks_dup(squashfs_inode *inode, struct dir_ent *dir_ent, long l
 		}
 	}
 
-	dupl_ptr = duplicate(read_size, file_bytes, &block_listp, &start, &fragment, read_buffer, buffer_list, blocks, 0, 0, FALSE);
+	dupl_ptr = duplicate(read_size, file_bytes, &block_listp, &start, &fragment, fragment_buffer, buffer_list, blocks, 0, 0, FALSE);
 
 	if(dupl_ptr) {
 		*duplicate_file = FALSE;
@@ -2675,6 +2675,7 @@ void write_file(squashfs_inode *inode, struct dir_ent *dir_ent, int *duplicate_f
 
 again:
 	read_buffer = get_file_buffer(from_deflate);
+
 	status = read_buffer->error;
 	if(status) {
 		cache_block_put(read_buffer);
@@ -3662,7 +3663,7 @@ void read_recovery_data(char *recovery_file, char *destination_file)
 
 
 #define VERSION() \
-	printf("mksquashfs version 4.0-CVS (2008/07/27)\n");\
+	printf("mksquashfs version 4.0-CVS (2008/07/30)\n");\
 	printf("copyright (C) 2008 Phillip Lougher <phillip@lougher.demon.co.uk>\n\n"); \
 	printf("This program is free software; you can redistribute it and/or\n");\
 	printf("modify it under the terms of the GNU General Public License\n");\
