@@ -392,7 +392,6 @@ struct file_info *add_non_dup(long long file_size, long long bytes, unsigned int
 extern void generate_file_priorities(struct dir_info *dir, int priority, struct stat *buf);
 extern struct priority_entry *priority_list[65536];
 void progress_bar(long long current, long long max, int columns);
-void restore_id_table();
 long long generic_write_table(int length, char *buffer, int uncompressed);
 
 
@@ -743,7 +742,7 @@ void restorefs()
 	dup_files = sdup_files;
 	fragments = sfragments;
 	fragment_size = 0;
-	restore_id_table();
+	id_count = sid_count;
 	longjmp(env, 1);
 }
 
@@ -1048,7 +1047,7 @@ long long write_id_table()
 }
 
 
-struct id *get_id(squashfs_id id)
+struct id *get_id(unsigned int id)
 {
 	int hash = ID_HASH(id);
 	struct id *entry = id_hash_table[hash];
@@ -1061,14 +1060,14 @@ struct id *get_id(squashfs_id id)
 }
 
 
-struct id *create_id(squashfs_id id, int index)
+struct id *create_id(unsigned int id)
 {
 	int hash = ID_HASH(id);
 	struct id *entry = malloc(sizeof(struct id));
 	if(entry == NULL)
 		BAD_ERROR("Out of memory in create_id\n");
 	entry->id = id;
-	entry->index = index;
+	entry->index = id_count ++;
 	entry->flags = 0;
 	entry->next = id_hash_table[hash];
 	id_hash_table[hash] = entry;
@@ -1077,14 +1076,14 @@ struct id *create_id(squashfs_id id, int index)
 }
 
 
-unsigned int get_uid(squashfs_id uid)
+unsigned int get_uid(unsigned int uid)
 {
 	struct id *entry = get_id(uid);
 
 	if(entry == NULL) {
 		if(id_count == SQUASHFS_IDS)
 			BAD_ERROR("Out of uids!\n");
-		entry = create_id(uid, id_count ++);
+		entry = create_id(uid);
 	}
 
 	if((entry->flags & ISA_UID) == 0) {
@@ -1096,14 +1095,14 @@ unsigned int get_uid(squashfs_id uid)
 }
 
 
-unsigned int get_guid(squashfs_id guid)
+unsigned int get_guid(unsigned int guid)
 {
 	struct id *entry = get_id(guid);
 
 	if(entry == NULL) {
 		if(id_count == SQUASHFS_IDS)
 			BAD_ERROR("Out of gids!\n");
-		entry = create_id(guid, id_count ++);
+		entry = create_id(guid);
 	}
 
 	if((entry->flags & ISA_GID) == 0) {
@@ -1112,16 +1111,6 @@ unsigned int get_guid(squashfs_id guid)
 	}
 
 	return entry->index;
-}
-
-
-void save_id_table()
-{
-}
-
-
-void restore_id_table()
-{
 }
 
 
@@ -1135,9 +1124,9 @@ int create_inode(squashfs_inode *i_no, struct dir_ent *dir_ent, int type, long l
 	int inode_number = (type == SQUASHFS_LDIR_TYPE || type == SQUASHFS_DIR_TYPE) ? dir_ent->inode->inode_number : dir_ent->inode->inode_number + dir_inode_no;
 
 	base->mode = SQUASHFS_MODE(buf->st_mode);
-	base->uid = get_uid((squashfs_id) global_uid == -1 ? buf->st_uid : global_uid);
+	base->uid = get_uid((unsigned int) global_uid == -1 ? buf->st_uid : global_uid);
 	base->inode_type = type;
-	base->guid = get_guid((squashfs_id) global_gid == -1 ? buf->st_gid : global_gid);
+	base->guid = get_guid((unsigned int) global_gid == -1 ? buf->st_gid : global_gid);
 	base->mtime = buf->st_mtime;
 	base->inode_number = inode_number;
 
@@ -3663,7 +3652,7 @@ void read_recovery_data(char *recovery_file, char *destination_file)
 
 
 #define VERSION() \
-	printf("mksquashfs version 4.0-CVS (2008/07/30)\n");\
+	printf("mksquashfs version 4.0-CVS (2008/08/03)\n");\
 	printf("copyright (C) 2008 Phillip Lougher <phillip@lougher.demon.co.uk>\n\n"); \
 	printf("This program is free software; you can redistribute it and/or\n");\
 	printf("modify it under the terms of the GNU General Public License\n");\
@@ -4104,7 +4093,7 @@ printOptions:
 		sfifo_count = fifo_count;
 		ssock_count = sock_count;
 		sdup_files = dup_files;
-		save_id_table();
+		sid_count = id_count;
 		write_recovery_data(&sBlk);
 		restore = TRUE;
 		if(setjmp(env))
