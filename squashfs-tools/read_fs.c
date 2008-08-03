@@ -23,6 +23,9 @@
 
 extern void read_bytes(int, long long, int, char *);
 extern int add_file(long long, long long, long long, unsigned int *, int, unsigned int, int, int);
+extern void *create_id(unsigned int);
+extern unsigned int get_uid(unsigned int);
+extern unsigned int get_guid(unsigned int);
 
 #define TRUE 1
 #define FALSE 0
@@ -107,11 +110,14 @@ int read_block(int fd, long long start, long long *next, unsigned char *block, s
 }
 
 
-int scan_inode_table(int fd, long long start, long long end, long long root_inode_start, int root_inode_offset,
-		squashfs_super_block *sBlk,
-		squashfs_inode_header *dir_inode, unsigned char **inode_table, unsigned int *root_inode_block,
-		unsigned int *root_inode_size, long long *uncompressed_file, unsigned int *uncompressed_directory,
-		int *file_count, int *sym_count, int *dev_count, int *dir_count, int *fifo_count, int *sock_count)
+int scan_inode_table(int fd, long long start, long long end,
+	long long root_inode_start, int root_inode_offset,
+	squashfs_super_block *sBlk, squashfs_inode_header *dir_inode,
+	unsigned char **inode_table, unsigned int *root_inode_block,
+	unsigned int *root_inode_size, long long *uncompressed_file,
+	unsigned int *uncompressed_directory, int *file_count, int *sym_count,
+	int *dev_count, int *dir_count, int *fifo_count, int *sock_count,
+	unsigned int *id_table)
 {
 	unsigned char *cur_ptr;
 	int byte, bytes = 0, size = 0, files = 0;
@@ -168,6 +174,8 @@ int scan_inode_table(int fd, long long start, long long end, long long root_inod
 			memcpy(&dir_inode->ldir, *inode_table + bytes, sizeof(dir_inode->ldir));
 		directory_start_block = dir_inode->ldir.start_block;
 	}
+	get_uid(id_table[dir_inode->base.uid]);
+	get_guid(id_table[dir_inode->base.guid]);
 
 	for(cur_ptr = *inode_table; cur_ptr < *inode_table + bytes; files ++) {
 		if(swap) {
@@ -177,8 +185,11 @@ int scan_inode_table(int fd, long long start, long long end, long long root_inod
 		} else
 			memcpy(&inode, cur_ptr, sizeof(inode));
 
-		TRACE("scan_inode_table: processing inode @ byte position 0x%x, type 0x%x\n", cur_ptr - *inode_table,
-				inode.inode_type);
+		TRACE("scan_inode_table: processing inode @ byte position 0x%x, type 0x%x\n", cur_ptr - *inode_table, inode.inode_type);
+
+		get_uid(id_table[inode.uid]);
+		get_guid(id_table[inode.guid]);
+
 		switch(inode.inode_type) {
 			case SQUASHFS_FILE_TYPE: {
 				int frag_bytes = inode.fragment == SQUASHFS_INVALID_FRAG ? 0 : inode.file_size % sBlk->block_size;
@@ -469,6 +480,56 @@ all_done:
 }
 
 
+unsigned int *read_id_table(int fd, squashfs_super_block *sBlk)
+{
+	int indexes = SQUASHFS_ID_BLOCKS(sBlk->no_ids);
+	long long index[indexes];
+	int bytes = SQUASHFS_ID_BYTES(sBlk->no_ids);
+	unsigned int *id_table, *sid_table;
+	int i;
+
+	id_table = malloc(bytes);
+	if(id_table == NULL) {
+		ERROR("Failed to allocate id table\n");
+		return NULL;
+	}
+	if(swap) {
+		long long sindex[indexes];
+		sid_table = malloc(bytes);
+		if(sid_table == NULL) {
+			ERROR("Failed to allocate id table\n");
+			free(id_table);
+			return NULL;
+		}
+
+		read_bytes(fd, sBlk->id_table_start, SQUASHFS_ID_BLOCK_BYTES(sBlk->no_ids), (char *) sindex);
+		SQUASHFS_SWAP_ID_BLOCKS(index, sindex, indexes);
+	} else
+		read_bytes(fd, sBlk->id_table_start, SQUASHFS_ID_BLOCK_BYTES(sBlk->no_ids), (char *) index);
+
+	for(i = 0; i < indexes; i++) {
+		int length;
+		if(swap)
+			length = read_block(fd, index[i], NULL, ((char *) sid_table) + (i * SQUASHFS_METADATA_SIZE), sBlk);
+		else
+			length = read_block(fd, index[i], NULL, ((char *) id_table) + (i * SQUASHFS_METADATA_SIZE), sBlk);
+		TRACE("Read id table block %d, from 0x%llx, length %d\n", i, index[i], length);
+	}
+
+	if(swap) {
+		SQUASHFS_SWAP_INTS(id_table, sid_table, sBlk->no_ids);
+		free(sid_table);
+	}
+
+	for(i = 0; i < sBlk->no_ids; i++) {
+		TRACE("Adding id %d to id tables\n", id_table[i]);
+		create_id(id_table[i]);
+	}
+
+	return id_table;
+}
+
+
 int read_fragment_table(int fd, squashfs_super_block *sBlk, squashfs_fragment_entry **fragment_table)
 {
 	int i, indexes = SQUASHFS_FRAGMENT_INDEXES(sBlk->fragments);
@@ -563,6 +624,7 @@ long long read_filesystem(char *root_name, int fd, squashfs_super_block *sBlk, c
 		SQUASHFS_INODE_BLK(sBlk->root_inode);
 	unsigned int root_inode_offset = SQUASHFS_INODE_OFFSET(sBlk->root_inode), root_inode_block, files;
 	squashfs_inode_header inode;
+	unsigned int *id_table;
 
 	printf("Scanning existing filesystem...\n");
 
@@ -572,9 +634,16 @@ long long read_filesystem(char *root_name, int fd, squashfs_super_block *sBlk, c
 	if(read_inode_lookup_table(fd, sBlk, inode_lookup_table) == 0)
 		goto error;
 
-	if((files = scan_inode_table(fd, start, end, root_inode_start, root_inode_offset, sBlk, &inode, &inode_table,
-			&root_inode_block, root_inode_size, uncompressed_file, uncompressed_directory, file_count, sym_count,
-			dev_count, dir_count, fifo_count, sock_count)) == 0) {
+	id_table = read_id_table(fd, sBlk);
+	if(id_table == NULL)
+		goto error;
+
+	if((files = scan_inode_table(fd, start, end, root_inode_start,
+			root_inode_offset, sBlk, &inode, &inode_table,
+			&root_inode_block, root_inode_size, uncompressed_file,
+			uncompressed_directory, file_count, sym_count,
+			dev_count, dir_count, fifo_count, sock_count, id_table))
+			== 0) {
 		ERROR("read_filesystem: inode table read failed\n");
 		goto error;
 	}
@@ -628,28 +697,6 @@ long long read_filesystem(char *root_name, int fd, squashfs_super_block *sBlk, c
 			goto error;
 		}
 		memcpy(*directory_data_cache, directory_table, *inode_dir_offset + *inode_dir_file_size);
-
-#if 0
-		if(!swap)
-			read_bytes(fd, sBlk->uid_start, sBlk->no_uids * sizeof(squashfs_uid), (char *) uids);
-		else {
-			squashfs_uid uids_copy[sBlk->no_uids];
-
-			read_bytes(fd, sBlk->uid_start, sBlk->no_uids * sizeof(squashfs_uid), (char *) uids_copy);
-			SQUASHFS_SWAP_DATA(uids, uids_copy, sBlk->no_uids, sizeof(squashfs_uid) * 8);
-		}
-
-		if(!swap)
-			read_bytes(fd, sBlk->guid_start, sBlk->no_guids * sizeof(squashfs_uid), (char *) guids);
-		else {
-			squashfs_uid guids_copy[sBlk->no_guids];
-
-			read_bytes(fd, sBlk->guid_start, sBlk->no_guids * sizeof(squashfs_uid), (char *) guids_copy);
-			SQUASHFS_SWAP_DATA(guids, guids_copy, sBlk->no_guids, sizeof(squashfs_uid) * 8);
-		}
-		*uid_count = sBlk->no_uids;
-		*guid_count = sBlk->no_guids;
-#endif
 
 		free(inode_table);
 		free(directory_table);
