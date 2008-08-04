@@ -325,14 +325,6 @@ struct queue {
 	void			**data;
 };
 
-/* describes the list of blocks in a file which is a possible
-   duplicate.  For each block, it indicates whether the block is
-   in memory or on disk */
-struct buffer_list {
-	long long start;
-	int size;
-	struct file_buffer *read_buffer;
-};
 
 /* in memory uid tables */
 #define ID_ENTRIES 256
@@ -385,7 +377,7 @@ extern long long read_filesystem(char *root_name, int fd, squashfs_super_block *
 		squashfs_fragment_entry **fragment_table, squashfs_inode **inode_lookup_table);
 extern int read_sort_file(char *filename, int source, char *source_path[]);
 extern void sort_files_and_write(struct dir_info *dir);
-struct file_info *duplicate(long long file_size, long long bytes, unsigned int **block_list, long long *start, struct fragment **fragment, struct file_buffer *file_buffer, struct buffer_list *buffer_list, int blocks, unsigned short checksum, unsigned short fragment_checksum, int checksum_flag);
+struct file_info *duplicate(long long file_size, long long bytes, unsigned int **block_list, long long *start, struct fragment **fragment, struct file_buffer *file_buffer, int blocks, unsigned short checksum, unsigned short fragment_checksum, int checksum_flag);
 struct dir_info *dir_scan1(char *, struct pathnames *, int (_readdir)(char *, char *, struct dir_info *));
 void dir_scan2(squashfs_inode *inode, struct dir_info *dir_info);
 struct file_info *add_non_dup(long long file_size, long long bytes, unsigned int *block_list, long long start, struct fragment *fragment, unsigned short checksum, unsigned short fragment_checksum, int checksum_flag);
@@ -1738,6 +1730,14 @@ char *read_from_disk(long long start, unsigned int avail_bytes)
 }
 
 
+char read_from_file_buffer2[SQUASHFS_FILE_MAX_SIZE];
+char *read_from_disk2(long long start, unsigned int avail_bytes)
+{
+	read_bytes(fd, start, avail_bytes, read_from_file_buffer2);
+	return read_from_file_buffer2;
+}
+
+
 /*
  * Compute 16 bit BSD checksum over the data
  */
@@ -1773,24 +1773,6 @@ unsigned short get_checksum_disk(long long start, long long l, unsigned int *blo
 			chksum = get_checksum(read_from_disk(start, bytes), bytes, chksum);
 		l -= bytes;
 		start += bytes;
-	}
-
-	return chksum;
-}
-
-
-unsigned short get_checksum_buffer(struct buffer_list *buffer_list, unsigned int blocks)
-{
-	unsigned short chksum = 0;
-	int block;
-
-	for(block = 0; block < blocks; block ++) {
-		struct buffer_list *b = &buffer_list[block];
-
-		if(b->read_buffer)
-			chksum = get_checksum(b->read_buffer->data, b->read_buffer->size, chksum);
-		else if(b->size != 0)
-			chksum = get_checksum(read_from_disk(b->start, b->size), b->size, chksum);
 	}
 
 	return chksum;
@@ -1902,22 +1884,21 @@ struct file_info *add_non_dup(long long file_size, long long bytes, unsigned int
 }
 
 
-char buffer2[SQUASHFS_FILE_MAX_SIZE];
-struct file_info *duplicate(long long file_size, long long bytes, unsigned int **block_list, long long *start, struct fragment **fragment, struct file_buffer *file_buffer, struct buffer_list *buffer_list, int blocks, unsigned short checksum, unsigned short fragment_checksum, int checksum_flag)
+struct file_info *duplicate(long long file_size, long long bytes, unsigned int **block_list, long long *start, struct fragment **fragment, struct file_buffer *file_buffer, int blocks, unsigned short checksum, unsigned short fragment_checksum, int checksum_flag)
 {
 	struct file_info *dupl_ptr = dupl[DUP_HASH(file_size)];
 	int frag_bytes = file_buffer ? file_buffer->size : 0;
 
 	for(; dupl_ptr; dupl_ptr = dupl_ptr->next)
 		if(file_size == dupl_ptr->file_size && bytes == dupl_ptr->bytes && frag_bytes == dupl_ptr->fragment->size) {
-			long long dup_start = dupl_ptr->start;
+			long long target_start, dup_start = dupl_ptr->start;
 			int block;
 
 			if(memcmp(*block_list, dupl_ptr->block_list, blocks * sizeof(unsigned int)) != 0)
 				continue;
 
 			if(checksum_flag == FALSE) {
-				checksum = get_checksum_buffer(buffer_list, blocks);
+				checksum = get_checksum_disk(*start, bytes, *block_list);
 				fragment_checksum = get_checksum_mem_buffer(file_buffer);
 				checksum_flag = TRUE;
 			}
@@ -1933,32 +1914,35 @@ struct file_info *duplicate(long long file_size, long long bytes, unsigned int *
 			if(checksum != dupl_ptr->checksum || fragment_checksum != dupl_ptr->fragment_checksum)
 				continue;
 
+			target_start = *start;
 			for(block = 0; block < blocks; block ++) {
-				struct buffer_list *b = &buffer_list[block];
-				struct file_buffer *write_buffer;
-				char *buffer, *data;
+				int size = SQUASHFS_COMPRESSED_SIZE_BLOCK((*block_list)[block]);
+				struct file_buffer *target_buffer = NULL;
+				struct file_buffer *dup_buffer = NULL;
+				char *target_data, *dup_data;
 				int res;
 
-				if(b->read_buffer)
-					buffer = b->read_buffer->data;
-				else if(b->size)
-					buffer = read_from_disk(b->start, b->size);
-				else
+				if(size == 0)
 					continue;
+				target_buffer = cache_lookup(writer_buffer, target_start);
+				if(target_buffer)
+					target_data = target_buffer->data;
+				else
+					target_data = read_from_disk(target_start, size);
 
-				write_buffer = cache_lookup(writer_buffer, dup_start);
-				if(write_buffer)
-					data = write_buffer->data;
-				else {
-					read_bytes(fd, dup_start, b->size, buffer2);
-					data = buffer2;
-				}
-				res = memcmp(buffer, data, b->size);
-				if(write_buffer)
-					cache_block_put(write_buffer);
+				dup_buffer = cache_lookup(writer_buffer, dup_start);
+				if(dup_buffer)
+					dup_data = dup_buffer->data;
+				else
+					dup_data = read_from_disk2(dup_start, size);
+
+				res = memcmp(target_data, dup_data, size);
+				cache_block_put(target_buffer);
+				cache_block_put(dup_buffer);
 				if(res != 0)
 					break;
-				dup_start += b->size;
+				target_start += size;
+				dup_start += size;
 			}
 			if(block == blocks) {
 				struct file_buffer *frag_buffer = get_fragment(dupl_ptr->fragment);
@@ -2382,7 +2366,7 @@ void write_file_frag_dup(squashfs_inode *inode, struct dir_ent *dir_ent, int siz
 	unsigned int *block_listp = NULL;
 	long long start = 0;
 
-	dupl_ptr = duplicate(size, 0, &block_listp, &start, &fragment, file_buffer, NULL, 0, 0, checksum, TRUE);
+	dupl_ptr = duplicate(size, 0, &block_listp, &start, &fragment, file_buffer, 0, 0, checksum, TRUE);
 
 	if(dupl_ptr) {
 		*duplicate_file = FALSE;
@@ -2533,12 +2517,12 @@ read_err:
 int write_file_blocks_dup(squashfs_inode *inode, struct dir_ent *dir_ent, long long read_size, struct file_buffer *read_buffer, int *duplicate_file)
 {
 	int block, thresh;
-	long long file_bytes, start;
+	long long file_bytes, dup_start, start;
 	struct fragment *fragment;
 	struct file_info *dupl_ptr;
 	int blocks = (read_size + block_size - 1) >> block_log;
 	unsigned int *block_list, *block_listp;
-	struct buffer_list *buffer_list;
+	struct file_buffer **buffer_list;
 	int status, num_locked_fragments;
 	long long sparse = 0;
 	struct file_buffer *fragment_buffer = NULL;
@@ -2547,13 +2531,13 @@ int write_file_blocks_dup(squashfs_inode *inode, struct dir_ent *dir_ent, long l
 		BAD_ERROR("Out of memory allocating block_list\n");
 	block_listp = block_list;
 
-	if((buffer_list = malloc(blocks * sizeof(struct buffer_list))) == NULL)
+	if((buffer_list = malloc(blocks * sizeof(struct file_buffer *))) == NULL)
 		BAD_ERROR("Out of memory allocating file block list\n");
 
 	num_locked_fragments = lock_fragments();
 
 	file_bytes = 0;
-	start = bytes;
+	start = dup_start = bytes;
 	thresh = blocks > (writer_buffer_size - num_locked_fragments) ? blocks - (writer_buffer_size - num_locked_fragments): 0;
 
 	for(block = 0; block < blocks;) {
@@ -2562,22 +2546,19 @@ int write_file_blocks_dup(squashfs_inode *inode, struct dir_ent *dir_ent, long l
 			blocks = read_size >> block_log;
 		} else {
 			block_list[block] = read_buffer->c_byte;
-			buffer_list[block].start = bytes;
 
 			if(read_buffer->c_byte) {
-				buffer_list[block].size = read_buffer->size;
 				read_buffer->block = bytes;
 				bytes += read_buffer->size;
 				file_bytes += read_buffer->size;
 				cache_rehash(read_buffer, read_buffer->block);
 				if(block < thresh) {
-					buffer_list[block].read_buffer = NULL;
+					buffer_list[block] = NULL;
 					queue_put(to_writer, read_buffer);
 				} else
-					buffer_list[block].read_buffer = read_buffer;
+					buffer_list[block] = read_buffer;
 			} else {
-				buffer_list[block].size = 0;
-				buffer_list[block].read_buffer = NULL;
+				buffer_list[block] = NULL;
 				sparse += read_buffer->size;
 				cache_block_put(read_buffer);
 			}
@@ -2591,20 +2572,20 @@ int write_file_blocks_dup(squashfs_inode *inode, struct dir_ent *dir_ent, long l
 		}
 	}
 
-	dupl_ptr = duplicate(read_size, file_bytes, &block_listp, &start, &fragment, fragment_buffer, buffer_list, blocks, 0, 0, FALSE);
+	dupl_ptr = duplicate(read_size, file_bytes, &block_listp, &dup_start, &fragment, fragment_buffer, blocks, 0, 0, FALSE);
 
 	if(dupl_ptr) {
 		*duplicate_file = FALSE;
 		for(block = thresh; block < blocks; block ++)
-			if(buffer_list[block].read_buffer)
-				queue_put(to_writer, buffer_list[block].read_buffer);
+			if(buffer_list[block])
+				queue_put(to_writer, buffer_list[block]);
 		fragment = get_and_fill_fragment(fragment_buffer);
 		dupl_ptr->fragment = fragment;
 	} else {
 		*duplicate_file = TRUE;
 		for(block = thresh; block < blocks; block ++)
-			cache_block_put(buffer_list[block].read_buffer);
-		bytes = buffer_list[0].start;
+			cache_block_put(buffer_list[block]);
+		bytes = start;
 		if(thresh && !block_device) {
 			queue_put(to_writer, NULL);
 			if(queue_get(from_writer) != 0)
@@ -2628,10 +2609,10 @@ int write_file_blocks_dup(squashfs_inode *inode, struct dir_ent *dir_ent, long l
 	if(sparse && (dir_ent->inode->buf.st_blocks << 9) >= read_size)
 		sparse = 0;
 
-	if(dir_ent->inode->nlink == 1 && read_size < (1LL << 32) && start < (1LL << 32) && sparse == 0)
-		create_inode(inode, dir_ent, SQUASHFS_FILE_TYPE, read_size, start, blocks, block_listp, fragment, NULL, 0);
+	if(dir_ent->inode->nlink == 1 && read_size < (1LL << 32) && dup_start < (1LL << 32) && sparse == 0)
+		create_inode(inode, dir_ent, SQUASHFS_FILE_TYPE, read_size, dup_start, blocks, block_listp, fragment, NULL, 0);
 	else
-		create_inode(inode, dir_ent, SQUASHFS_LREG_TYPE, read_size, start, blocks, block_listp, fragment, NULL, sparse);
+		create_inode(inode, dir_ent, SQUASHFS_LREG_TYPE, read_size, dup_start, blocks, block_listp, fragment, NULL, sparse);
 
 	if(*duplicate_file == TRUE)
 		free(block_list);
@@ -2650,7 +2631,7 @@ read_err:
 	}
 	unlock_fragments();
 	for(blocks = thresh; blocks < block; blocks ++)
-		cache_block_put(buffer_list[blocks].read_buffer);
+		cache_block_put(buffer_list[blocks]);
 	free(buffer_list);
 	free(block_list);
 	cache_block_put(read_buffer);
