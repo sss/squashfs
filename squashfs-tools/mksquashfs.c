@@ -2563,9 +2563,9 @@ int write_file_blocks_dup(squashfs_inode *inode, struct dir_ent *dir_ent, long l
 			blocks = read_size >> block_log;
 		} else {
 			block_list[block] = read_buffer->c_byte;
+			buffer_list[block].start = bytes;
 
 			if(read_buffer->c_byte) {
-				buffer_list[block].start = bytes;
 				buffer_list[block].size = read_buffer->size;
 				read_buffer->block = bytes;
 				bytes += read_buffer->size;
