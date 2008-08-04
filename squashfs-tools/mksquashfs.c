@@ -2606,8 +2606,12 @@ int write_file_blocks_dup(squashfs_inode *inode, struct dir_ent *dir_ent, long l
 		for(block = thresh; block < blocks; block ++)
 			cache_block_put(buffer_list[block].read_buffer);
 		bytes = buffer_list[0].start;
-		if(thresh && !block_device)
+		if(thresh && !block_device) {
+			queue_put(to_writer, NULL);
+			if(queue_get(from_writer) != 0)
+				EXIT_MKSQUASHFS();
 			ftruncate(fd, bytes);
+		}
 	}
 
 	unlock_fragments();
