@@ -2516,13 +2516,12 @@ int write_file_blocks(squashfs_inode *inode, struct dir_ent *dir_ent, long long 
 read_err:
 	cur_uncompressed -= block;
 	status = read_buffer->error;
-	if(block) {
+	bytes = start;
+	if(!block_device) {
 		queue_put(to_writer, NULL);
 		if(queue_get(from_writer) != 0)
 			EXIT_MKSQUASHFS();
-		bytes = start;
-		if(!block_device)
-			ftruncate(fd, bytes);
+		ftruncate(fd, bytes);
 	}
 	unlock_fragments();
 	free(block_list);
@@ -2642,13 +2641,12 @@ int write_file_blocks_dup(squashfs_inode *inode, struct dir_ent *dir_ent, long l
 read_err:
 	cur_uncompressed -= block;
 	status = read_buffer->error;
-	if(block && thresh) {
+	bytes = start;
+	if(thresh && !block_device) {
 		queue_put(to_writer, NULL);
 		if(queue_get(from_writer) != 0)
 			EXIT_MKSQUASHFS();
-		bytes = start;
-		if(!block_device)
-			ftruncate(fd, bytes);
+		ftruncate(fd, bytes);
 	}
 	unlock_fragments();
 	for(blocks = thresh; blocks < block; blocks ++)
