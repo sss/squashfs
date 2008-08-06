@@ -79,8 +79,6 @@ int read_block(int fd, long long start, long long *next, unsigned char *block, s
 	} else 
 		read_bytes(fd, start, 2, (char *)&c_byte);
 
-	if(SQUASHFS_CHECK_DATA(sBlk->flags))
-		offset = 3;
 	if(SQUASHFS_COMPRESSED(c_byte)) {
 		char buffer[SQUASHFS_METADATA_SIZE];
 		int res;
@@ -396,7 +394,6 @@ int read_super(int fd, squashfs_super_block *sBlk, int *be, char *source)
 	printf("\tInodes are %scompressed\n", SQUASHFS_UNCOMPRESSED_INODES(sBlk->flags) ? "un" : "");
 	printf("\tData is %scompressed\n", SQUASHFS_UNCOMPRESSED_DATA(sBlk->flags) ? "un" : "");
 	printf("\tFragments are %scompressed\n", SQUASHFS_UNCOMPRESSED_FRAGMENTS(sBlk->flags) ? "un" : "");
-	printf("\tCheck data is %spresent in the filesystem\n", SQUASHFS_CHECK_DATA(sBlk->flags) ? "" : "not ");
 	printf("\tFragments are %spresent in the filesystem\n", SQUASHFS_NO_FRAGMENTS(sBlk->flags) ? "not " : "");
 	printf("\tAlways_use_fragments option is %sspecified\n", SQUASHFS_ALWAYS_FRAGMENTS(sBlk->flags) ? "" : "not ");
 	printf("\tDuplicates are %sremoved\n", SQUASHFS_DUPLICATES(sBlk->flags) ? "" : "not ");
