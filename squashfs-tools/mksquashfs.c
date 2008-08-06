@@ -58,7 +58,8 @@
 #include <sys/sysinfo.h>
 #endif
 
-#include <squashfs_fs.h>
+#include "squashfs_fs.h"
+#include "squashfs_swap.h"
 #include "mksquashfs.h"
 #include "global.h"
 #include "sort.h"
