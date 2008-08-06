@@ -84,12 +84,9 @@
 #define SQUASHFS_EXPORTABLE(flags)		SQUASHFS_BIT(flags, \
 						SQUASHFS_EXPORT)
 
-#define SQUASHFS_CHECK_DATA(flags)		SQUASHFS_BIT(flags, \
-						SQUASHFS_CHECK)
-
-#define SQUASHFS_MKFLAGS(noi, nod, check_data, nof, no_frag, always_frag, \
-		duplicate_checking, exportable)	(noi | (nod << 1) | (check_data << 2) \
-		| (nof << 3) | (no_frag << 4) | (always_frag << 5) | \
+#define SQUASHFS_MKFLAGS(noi, nod, nof, no_frag, always_frag, \
+		duplicate_checking, exportable)	(noi | (nod << 1) | \
+		(nof << 3) | (no_frag << 4) | (always_frag << 5) | \
 		(duplicate_checking << 6) | (exportable << 7))
 
 /* Max number of types and file types */
