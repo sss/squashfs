@@ -27,6 +27,10 @@
  * definitions for structures on disk - layout 3.x
  */
 
+#define SQUASHFS_CHECK			2
+#define SQUASHFS_CHECK_DATA(flags)		SQUASHFS_BIT(flags, \
+						SQUASHFS_CHECK)
+
 /* Max number of uids and gids */
 #define SQUASHFS_UIDS			256
 #define SQUASHFS_GUIDS			255
