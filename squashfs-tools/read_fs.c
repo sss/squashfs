@@ -46,7 +46,8 @@ extern unsigned int get_guid(unsigned int);
 #include <endian.h>
 #endif
 
-#include <squashfs_fs.h>
+#include "squashfs_fs.h"
+#include "squashfs_swap.h"
 #include "read_fs.h"
 #include "global.h"
 
