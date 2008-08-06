@@ -102,6 +102,9 @@
 					EXIT_MKSQUASHFS();\
 				} while(0)
 
+/* offset of data in compressed metadata blocks (allowing room for
+ * compressed size */
+#define BLOCK_OFFSET 2
 int delete = FALSE;
 int fd;
 int cur_uncompressed = 0, estimated_uncompressed = 0;
@@ -109,7 +112,7 @@ int columns;
 
 /* filesystem flags for building */
 int duplicate_checking = 1, noF = 0, no_fragments = 0, always_use_fragments = 0;
-int noI = 0, noD = 0, check_data = 0;
+int noI = 0, noD = 0;
 int swap, silent = TRUE;
 long long global_uid = -1, global_gid = -1;
 int exportable = TRUE;
@@ -122,7 +125,6 @@ int use_regex = FALSE;
 /* superblock attributes */
 int block_size = SQUASHFS_FILE_SIZE, block_log;
 unsigned int id_count = 0;
-int block_offset;
 int file_count = 0, sym_count = 0, dev_count = 0, dir_count = 0, fifo_count = 0, sock_count = 0;
 
 /* write position within data section */
@@ -882,17 +884,15 @@ squashfs_base_inode_header *get_inode(int req_size)
 			inode_size += (SQUASHFS_METADATA_SIZE << 1) + 2;
 		}
 
-		c_byte = mangle(inode_table + inode_bytes + block_offset, data_cache,
+		c_byte = mangle(inode_table + inode_bytes + BLOCK_OFFSET, data_cache,
 								SQUASHFS_METADATA_SIZE, SQUASHFS_METADATA_SIZE, noI, 0);
 		TRACE("Inode block @ 0x%x, size %d\n", inode_bytes, c_byte);
 		if(!swap)
 			memcpy(inode_table + inode_bytes, &c_byte, sizeof(unsigned short));
 		else
 			SQUASHFS_SWAP_SHORTS((&c_byte), (inode_table + inode_bytes), 1);
-		if(check_data)
-			*((unsigned char *)(inode_table + inode_bytes + block_offset - 1)) = SQUASHFS_MARKER_BYTE;
-		inode_bytes += SQUASHFS_COMPRESSED_SIZE(c_byte) + block_offset;
-		total_inode_bytes += SQUASHFS_METADATA_SIZE + block_offset;
+		inode_bytes += SQUASHFS_COMPRESSED_SIZE(c_byte) + BLOCK_OFFSET;
+		total_inode_bytes += SQUASHFS_METADATA_SIZE + BLOCK_OFFSET;
 		memcpy(data_cache, data_cache + SQUASHFS_METADATA_SIZE, cache_bytes - SQUASHFS_METADATA_SIZE);
 		cache_bytes -= SQUASHFS_METADATA_SIZE;
 	}
@@ -963,16 +963,14 @@ long long write_inodes()
 			inode_size += (SQUASHFS_METADATA_SIZE << 1) + 2;
 		}
 		avail_bytes = cache_bytes > SQUASHFS_METADATA_SIZE ? SQUASHFS_METADATA_SIZE : cache_bytes;
-		c_byte = mangle(inode_table + inode_bytes + block_offset, datap, avail_bytes, SQUASHFS_METADATA_SIZE, noI, 0);
+		c_byte = mangle(inode_table + inode_bytes + BLOCK_OFFSET, datap, avail_bytes, SQUASHFS_METADATA_SIZE, noI, 0);
 		TRACE("Inode block @ 0x%x, size %d\n", inode_bytes, c_byte);
 		if(!swap)
 			memcpy(inode_table + inode_bytes, &c_byte, sizeof(unsigned short));
 		else
 			SQUASHFS_SWAP_SHORTS((&c_byte), (inode_table + inode_bytes), 1); 
-		if(check_data)
-			*((unsigned char *)(inode_table + inode_bytes + block_offset - 1)) = SQUASHFS_MARKER_BYTE;
-		inode_bytes += SQUASHFS_COMPRESSED_SIZE(c_byte) + block_offset;
-		total_inode_bytes += avail_bytes + block_offset;
+		inode_bytes += SQUASHFS_COMPRESSED_SIZE(c_byte) + BLOCK_OFFSET;
+		total_inode_bytes += avail_bytes + BLOCK_OFFSET;
 		datap += avail_bytes;
 		cache_bytes -= avail_bytes;
 	}
@@ -1000,16 +998,14 @@ long long write_directories()
 			directory_size += (SQUASHFS_METADATA_SIZE << 1) + 2;
 		}
 		avail_bytes = directory_cache_bytes > SQUASHFS_METADATA_SIZE ? SQUASHFS_METADATA_SIZE : directory_cache_bytes;
-		c_byte = mangle(directory_table + directory_bytes + block_offset, directoryp, avail_bytes, SQUASHFS_METADATA_SIZE, noI, 0);
+		c_byte = mangle(directory_table + directory_bytes + BLOCK_OFFSET, directoryp, avail_bytes, SQUASHFS_METADATA_SIZE, noI, 0);
 		TRACE("Directory block @ 0x%x, size %d\n", directory_bytes, c_byte);
 		if(!swap)
 			memcpy(directory_table + directory_bytes, &c_byte, sizeof(unsigned short));
 		else
 			SQUASHFS_SWAP_SHORTS((&c_byte), (directory_table + directory_bytes), 1);
-		if(check_data)
-			*((unsigned char *)(directory_table + directory_bytes + block_offset - 1)) = SQUASHFS_MARKER_BYTE;
-		directory_bytes += SQUASHFS_COMPRESSED_SIZE(c_byte) + block_offset;
-		total_directory_bytes += avail_bytes + block_offset;
+		directory_bytes += SQUASHFS_COMPRESSED_SIZE(c_byte) + BLOCK_OFFSET;
+		total_directory_bytes += avail_bytes + BLOCK_OFFSET;
 		directoryp += avail_bytes;
 		directory_cache_bytes -= avail_bytes;
 	}
@@ -1421,17 +1417,15 @@ void write_dir(squashfs_inode *inode, struct dir_info *dir_info, struct director
 			directory_size += SQUASHFS_METADATA_SIZE << 1;
 		}
 
-		c_byte = mangle(directory_table + directory_bytes + block_offset, directory_data_cache,
+		c_byte = mangle(directory_table + directory_bytes + BLOCK_OFFSET, directory_data_cache,
 				SQUASHFS_METADATA_SIZE, SQUASHFS_METADATA_SIZE, noI, 0);
 		TRACE("Directory block @ 0x%x, size %d\n", directory_bytes, c_byte);
 		if(!swap)
 			memcpy(directory_table + directory_bytes, &c_byte, sizeof(unsigned short));
 		else
 			SQUASHFS_SWAP_SHORTS((&c_byte), (directory_table + directory_bytes), 1);
-		if(check_data)
-			*((unsigned char *)(directory_table + directory_bytes + block_offset - 1)) = SQUASHFS_MARKER_BYTE;
-		directory_bytes += SQUASHFS_COMPRESSED_SIZE(c_byte) + block_offset;
-		total_directory_bytes += SQUASHFS_METADATA_SIZE + block_offset;
+		directory_bytes += SQUASHFS_COMPRESSED_SIZE(c_byte) + BLOCK_OFFSET;
+		total_directory_bytes += SQUASHFS_METADATA_SIZE + BLOCK_OFFSET;
 		memcpy(directory_data_cache, directory_data_cache + SQUASHFS_METADATA_SIZE, directory_cache_bytes - SQUASHFS_METADATA_SIZE);
 		directory_cache_bytes -= SQUASHFS_METADATA_SIZE;
 	}
@@ -1661,15 +1655,13 @@ long long generic_write_table(int length, char *buffer, int uncompressed)
 
 	for(i = 0; i < meta_blocks; i++) {
 		int avail_bytes = length > SQUASHFS_METADATA_SIZE ? SQUASHFS_METADATA_SIZE : length;
-		c_byte = mangle(cbuffer + block_offset, buffer + i * SQUASHFS_METADATA_SIZE , avail_bytes, SQUASHFS_METADATA_SIZE, uncompressed, 0);
+		c_byte = mangle(cbuffer + BLOCK_OFFSET, buffer + i * SQUASHFS_METADATA_SIZE , avail_bytes, SQUASHFS_METADATA_SIZE, uncompressed, 0);
 		if(!swap)
 			memcpy(cbuffer, &c_byte, sizeof(unsigned short));
 		else
 			SQUASHFS_SWAP_SHORTS((&c_byte), cbuffer, 1);
-		if(check_data)
-			*((unsigned char *)(cbuffer + block_offset - 1)) = SQUASHFS_MARKER_BYTE;
 		list[i] = bytes;
-		compressed_size = SQUASHFS_COMPRESSED_SIZE(c_byte) + block_offset;
+		compressed_size = SQUASHFS_COMPRESSED_SIZE(c_byte) + BLOCK_OFFSET;
 		TRACE("block %d @ 0x%llx, compressed size %d\n", i, bytes, compressed_size);
 		write_bytes(fd, bytes, compressed_size, cbuffer);
 		bytes += compressed_size;
@@ -3815,9 +3807,6 @@ int main(int argc, char *argv[])
 		else if(strcmp(argv[i], "-nopad") == 0)
 			nopad = TRUE;
 
-		else if(strcmp(argv[i], "-check_data") == 0)
-			check_data = TRUE;
-
 		else if(strcmp(argv[i], "-info") == 0) {
 			silent = FALSE;
 			progress = FALSE;
@@ -3882,7 +3871,6 @@ printOptions:
 			ERROR("-le\t\t\tcreate a little endian filesystem\n");
 			ERROR("-be\t\t\tcreate a big endian filesystem\n");
 			ERROR("-nopad\t\t\tdo not pad filesystem to a multiple of 4K\n");
-			ERROR("-check_data\t\tadd checkdata for greater filesystem checks\n");
 			ERROR("-root-owned\t\talternative name for -all-root\n");
 			ERROR("-noInodeCompression\talternative name for -noI\n");
 			ERROR("-noDataCompression\talternative name for -noD\n");
@@ -4004,7 +3992,6 @@ printOptions:
 		noI = SQUASHFS_UNCOMPRESSED_INODES(sBlk.flags);
 		noD = SQUASHFS_UNCOMPRESSED_DATA(sBlk.flags);
 		noF = SQUASHFS_UNCOMPRESSED_FRAGMENTS(sBlk.flags);
-		check_data = SQUASHFS_CHECK_DATA(sBlk.flags);
 		no_fragments = SQUASHFS_NO_FRAGMENTS(sBlk.flags);
 		always_use_fragments = SQUASHFS_ALWAYS_FRAGMENTS(sBlk.flags);
 		duplicate_checking = SQUASHFS_DUPLICATES(sBlk.flags);
@@ -4039,7 +4026,7 @@ printOptions:
 
 		printf("Appending to existing %s %d.%d filesystem on %s, block size %d\n", be ? "big endian" :
 			"little endian", SQUASHFS_MAJOR, s_minor, argv[source + 1], block_size);
-		printf("All -be, -le, -b, -noI, -noD, -noF, -check_data, no-duplicates, no-fragments, -always-use-fragments and -exportable options ignored\n");
+		printf("All -be, -le, -b, -noI, -noD, -noF, no-duplicates, no-fragments, -always-use-fragments and -exportable options ignored\n");
 		printf("\nIf appending is not wanted, please re-run with -noappend specified!\n\n");
 
 		compressed_data = (inode_dir_offset + inode_dir_file_size) & ~(SQUASHFS_METADATA_SIZE - 1);
@@ -4111,8 +4098,6 @@ printOptions:
 	swap = be;
 #endif
 
-	block_offset = check_data ? 3 : 2;
-
 	if(path || stickypath) {
 		paths = init_subdir();
 		if(path)
@@ -4134,7 +4119,7 @@ printOptions:
 	sBlk.s_minor = s_minor;
 	sBlk.block_size = block_size;
 	sBlk.block_log = block_log;
-	sBlk.flags = SQUASHFS_MKFLAGS(noI, noD, check_data, noF, no_fragments, always_use_fragments, duplicate_checking, exportable);
+	sBlk.flags = SQUASHFS_MKFLAGS(noI, noD, noF, no_fragments, always_use_fragments, duplicate_checking, exportable);
 	sBlk.mkfs_time = time(NULL);
 
 restore_filesystem:
