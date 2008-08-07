@@ -1,5 +1,4 @@
-CVS status (devel-4_0 branch):
+CVS status:
 
-New 4.0 disk layout.  Everything horribly broken, don't
-even think about generating a new 4.0 layout and mounting it,
-it will likely kernel oops horribly.
+New 4.0 disk layout.  Mksquashfs should generate correct filesystems, and the
+kernel code can mount them.  Swapping and Unsquashfs still broken.
