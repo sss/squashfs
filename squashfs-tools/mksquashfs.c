@@ -1854,7 +1854,7 @@ struct file_info *duplicate(long long file_size, long long bytes, unsigned int *
 				continue;
 
 			if(checksum_flag == FALSE) {
-				checksum = get_checksum_buffer(buffer_list, blocks);
+				checksum = get_checksum_disk(*start, bytes, *block_list);
 				fragment_checksum = get_checksum_mem_buffer(file_buffer);
 				checksum_flag = TRUE;
 			}
@@ -1872,27 +1872,34 @@ struct file_info *duplicate(long long file_size, long long bytes, unsigned int *
 
 			for(block = 0; block < blocks; block ++) {
 				struct buffer_list *b = &buffer_list[block];
-				struct file_buffer *write_buffer;
-				char *buffer, *data;
+				struct file_buffer *target_buffer = NULL;
+				struct file_buffer *dup_buffer = NULL;
+				char *target_data, *dup_data;
 				int res;
 
 				if(b->read_buffer)
-					buffer = b->read_buffer->data;
-				else if(b->size)
-					buffer = read_from_disk(b->start, b->size);
-				else
+					target_data = b->read_buffer->data;
+				else if(b->size) {
+					target_buffer = cache_lookup(writer_buffer, b->start);
+					if(target_buffer)
+						target_data = target_buffer->data;
+					else
+						target_data = read_from_disk(b->start, b->size);
+				} else
 					continue;
 
-				write_buffer = cache_lookup(writer_buffer, dup_start);
-				if(write_buffer)
-					data = write_buffer->data;
+				dup_buffer = cache_lookup(writer_buffer, dup_start);
+				if(dup_buffer)
+					dup_data = dup_buffer->data;
 				else {
 					read_bytes(fd, dup_start, b->size, buffer2);
-					data = buffer2;
+					dup_data = buffer2;
 				}
-				res = memcmp(buffer, data, b->size);
-				if(write_buffer)
-					cache_block_put(write_buffer);
+				res = memcmp(target_data, dup_data, b->size);
+				if(target_buffer)
+					cache_block_put(target_buffer);
+				if(dup_buffer)
+					cache_block_put(dup_buffer);
 				if(res != 0)
 					break;
 				dup_start += b->size;
