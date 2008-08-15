@@ -1,4 +1,10 @@
-CVS status:
+CVS status (devel-3_4):
 
-New 4.0 disk layout.  Mksquashfs should generate correct filesystems, and the
-kernel code can mount them.  Swapping and Unsquashfs still broken.
+This is the branch for the soon to be released Squashfs 3.4.  This
+is basically HEAD just before the 4.0 changes started to be applied,
+with some bug fixes that have come to light since then.
+
+It wasn't my intention to do a 3.4 release but to go straight to
+4.0, but the 3.3 release has too many patches missing for new
+kernels (2.6.25, 2.6.26, 2.6.27-rcX) and too many rare but nasty
+bugs have come to light to wait for 4.0...
