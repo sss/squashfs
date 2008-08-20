@@ -4,3 +4,21 @@ not compile on anything older.
 For earlier kernel versions please check if there's any patches in this
 directory.  If a patch exists it will patch the squashfs code to work on that
 kernel.
+
+Using these files:
+
+1. Patch your vanilla kernel (if not already patched by a distro) with the
+   latest Squashfs release (currently 3.3).  This will provide the
+   Kconfig/Makefiles etc.  which are not in CVS.  Use the kernel patch
+   closest to your kernel (it doesn't really matter, you'll be replacing the
+   important files anyway).
+
+2. Copy the files in the CVS kernel tree to the appropriate places in the
+   kernel source.
+
+3. If you're using the linux-next tree then you're finished, just compile it.
+
+4. Otherwise find the appropriate patch file for your kernel (in this
+   directory), and patch your kernel source cd'ed into the top level
+   directory (patch -p1 < xxx).  Next compile.
+
