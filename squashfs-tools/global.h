@@ -4,7 +4,7 @@
 /*
  * Squashfs
  *
- * Copyright (c) 2002, 2003, 2004, 2005, 2006, 2007
+ * Copyright (c) 2002, 2003, 2004, 2005, 2006, 2007, 2008
  * Phillip Lougher <phillip@lougher.demon.co.uk>
  *
  * This program is free software; you can redistribute it and/or
@@ -66,7 +66,7 @@ typedef struct squashfs_fragment_entry_2 squashfs_fragment_entry_2;
 typedef union squashfs_inode_header_2 squashfs_inode_header_2;
 #endif
 
-typedef unsigned int squashfs_id;
+typedef unsigned int squashfs_uid;
 typedef long long squashfs_fragment_index;
 typedef squashfs_inode_t squashfs_inode;
 typedef squashfs_block_t squashfs_block;
