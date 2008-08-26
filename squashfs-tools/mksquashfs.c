@@ -1432,19 +1432,10 @@ struct file_buffer *get_fragment(struct fragment *fragment)
 		return NULL;
 
 	buffer = cache_lookup(fragment_buffer, fragment->index);
-	if(buffer) {
-		//printf("get_fragment, fragment->index %d, buffer->index %lld, fragments %d\n", fragment->index, buffer->index, fragments);
+	if(buffer)
 		return buffer;
-	}
 
 	compressed_buffer = cache_lookup(writer_buffer, fragment->index + FRAG_INDEX);
-
-#if 0
-	if(compressed_buffer)
-		//printf("get_fragment, fragment->index %d, compressed_buffer->index %lld\n", fragment->index, compressed_buffer->index - FRAG_INDEX);
-	else
-		//printf("get_fragment, fragment->index %d, not in writer_buffer\n", fragment->index);
-#endif
 
 	buffer = cache_get(fragment_buffer, fragment->index, 1);
 
@@ -1502,7 +1493,6 @@ int lock_fragments()
 {
 	int count;
 	pthread_mutex_lock(&fragment_mutex);
-	//printf("lock_fragments: fragments_outstanding %d\n", fragments_outstanding);
 	fragments_locked = TRUE;
 	count = fragments_outstanding;
 	pthread_mutex_unlock(&fragment_mutex);
