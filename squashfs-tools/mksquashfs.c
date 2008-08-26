@@ -1715,24 +1715,6 @@ unsigned short get_checksum_disk(long long start, long long l, unsigned int *blo
 }
 
 
-unsigned short get_checksum_buffer(struct buffer_list *buffer_list, unsigned int blocks)
-{
-	unsigned short chksum = 0;
-	int block;
-
-	for(block = 0; block < blocks; block ++) {
-		struct buffer_list *b = &buffer_list[block];
-
-		if(b->read_buffer)
-			chksum = get_checksum(b->read_buffer->data, b->read_buffer->size, chksum);
-		else if(b->size != 0)
-			chksum = get_checksum(read_from_disk(b->start, b->size), b->size, chksum);
-	}
-
-	return chksum;
-}
-
-
 unsigned short get_checksum_mem(char *buff, int bytes)
 {
 	return get_checksum(buff, bytes, 0);
