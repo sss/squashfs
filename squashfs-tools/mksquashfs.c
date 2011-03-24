@@ -50,11 +50,18 @@
 #include <fnmatch.h>
 #include <sys/wait.h>
 
+#ifdef __CYGWIN__
+#include <sys/termios.h>
+#define FNM_EXTMATCH  (1 << 5)
+#endif
+
 #ifndef linux
+#ifndef __CYGWIN__
 #define __BYTE_ORDER BYTE_ORDER
 #define __BIG_ENDIAN BIG_ENDIAN
 #define __LITTLE_ENDIAN LITTLE_ENDIAN
 #include <sys/sysctl.h>
+#endif /* __CYGWIN__ */
 #else
 #include <endian.h>
 #include <sys/sysinfo.h>
@@ -4062,6 +4069,9 @@ void initialise_threads(int readb_mbytes, int writeb_mbytes,
 
 	signal(SIGUSR1, sigusr1_handler);
 
+#ifdef __CYGWIN__
+	processors = atoi(getenv("NUMBER_OF_PROCESSORS"));
+#else
 	if(processors == -1) {
 #ifndef linux
 		int mib[2];
@@ -4083,6 +4093,7 @@ void initialise_threads(int readb_mbytes, int writeb_mbytes,
 		processors = sysconf(_SC_NPROCESSORS_ONLN);
 #endif
 	}
+#endif /* __CYGWIN__ */
 
 	thread = malloc((2 + processors * 2) * sizeof(pthread_t));
 	if(thread == NULL)

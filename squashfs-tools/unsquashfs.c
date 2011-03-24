@@ -32,6 +32,11 @@
 #include <sys/sysinfo.h>
 #include <sys/types.h>
 
+#ifdef __CYGWIN__
+#include <sys/termios.h>
+#define FNM_EXTMATCH  (1 << 5)
+#endif
+
 struct cache *fragment_cache, *data_cache;
 struct queue *to_reader, *to_deflate, *to_writer, *from_writer;
 pthread_t *thread, *deflator_thread;
@@ -1818,6 +1823,9 @@ void initialise_threads(int fragment_buffer_size, int data_buffer_size)
 		EXIT_UNSQUASH("Failed to set signal mask in intialise_threads"
 			"\n");
 
+#ifdef __CYGWIN__
+	processors = atoi(getenv("NUMBER_OF_PROCESSORS"));
+#else /* __CYGWIN__ */
 	if(processors == -1) {
 #ifndef linux
 		int mib[2];
@@ -1839,6 +1847,7 @@ void initialise_threads(int fragment_buffer_size, int data_buffer_size)
 		processors = sysconf(_SC_NPROCESSORS_ONLN);
 #endif
 	}
+#endif /* __CYGWIN__ */
 
 	thread = malloc((3 + processors) * sizeof(pthread_t));
 	if(thread == NULL)
