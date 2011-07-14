@@ -5,7 +5,7 @@
 ### upstream/\*: (branches, tags)
 These are upstream from git://squashfs.git.sourceforge.net/gitroot/squashfs/squashfs .
 
-### trunk:
+### master:
 Only includes README.md (this file).
 
 ### cygwin: (branch)
