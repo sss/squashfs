@@ -1,4 +1,15 @@
 ###############################################
+#         Stable tools build options          #
+###############################################
+#
+# The Actions code is still in an unfinished "experimental" state.
+# It is not considered sufficiently stable to be included in any
+# stable build of Mksquashfs.
+# Therefore by default disable it, it can enabled by uncommenting the
+# following ENABLE_ACTIONS line.
+#ENABLE_ACTIONS = 1
+
+###############################################
 #          Compression build options          #
 ###############################################
 #
@@ -195,6 +206,10 @@ endif
 #
 ifeq (, $(findstring $(COMP_DEFAULT), $(COMPRESSORS)))
 $(error "COMP_DEFAULT isn't selected to be built!")
+endif
+
+ifeq ($(ENABLE_ACTIONS),1)
+CFLAGS += -DENABLE_ACTIONS
 endif
 
 .PHONY: all

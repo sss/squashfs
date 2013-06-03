@@ -48,19 +48,21 @@
  * code to parse actions
  */
 
-static char *cur_ptr, *source;
-static struct action *fragment_spec = NULL;
-static struct action *exclude_spec = NULL;
-static struct action *empty_spec = NULL;
-static struct action *move_spec = NULL;
-static struct action *other_spec = NULL;
-static int fragment_count = 0;
 static int exclude_count = 0;
 static int empty_count = 0;
 static int move_count = 0;
 static int other_count = 0;
 
 static struct file_buffer *def_fragment = NULL;
+
+#ifdef ENABLE_ACTIONS
+static int fragment_count = 0;
+static char *cur_ptr, *source;
+static struct action *fragment_spec = NULL;
+static struct action *exclude_spec = NULL;
+static struct action *empty_spec = NULL;
+static struct action *move_spec = NULL;
+static struct action *other_spec = NULL;
 
 static struct token_entry token_table[] = {
 	{ "(", TOK_OPEN_BRACKET, 1, },
@@ -80,13 +82,13 @@ static struct test_entry test_table[];
 
 static struct action_entry action_table[];
 
-static struct expr *parse_expr(int subexp);
-
 extern char *pathname(struct dir_ent *);
 
 extern char *subpathname(struct dir_ent *);
 
 extern int read_file(char *filename, char *type, int (parse_line)(char *));
+
+static struct expr *parse_expr(int subexp);
 
 /*
  * Lexical analyser
@@ -598,18 +600,22 @@ void dump_action_list(struct action *spec_list, int spec_count)
 		printf("\n");
 	}
 }
+#endif
 
 
 void dump_actions()
 {
+#ifdef ENABLE_ACTIONS
 	dump_action_list(exclude_spec, exclude_count);
 	dump_action_list(fragment_spec, fragment_count);
 	dump_action_list(other_spec, other_count);
 	dump_action_list(move_spec, move_count);
 	dump_action_list(empty_spec, empty_count);
+#endif
 }
 
 
+#ifdef ENABLE_ACTIONS
 /*
  * Evaluate expressions
  */
@@ -652,6 +658,7 @@ int read_action_file(char *filename)
 {
 	return read_file(filename, "action", parse_action);
 }
+#endif
 
 
 /*
@@ -665,6 +672,7 @@ int actions()
 
 void eval_actions(struct dir_ent *dir_ent)
 {
+#ifdef ENABLE_ACTIONS
 	int i, match;
 	struct action_data action_data;
 	int file_type = dir_ent->inode->buf.st_mode & S_IFMT;
@@ -687,6 +695,7 @@ void eval_actions(struct dir_ent *dir_ent)
 		if (match)
 			action->action->run_action(action, dir_ent);
 	}
+#endif
 }
 
 
@@ -695,6 +704,7 @@ void eval_actions(struct dir_ent *dir_ent)
  */
 void *eval_frag_actions(struct dir_ent *dir_ent)
 {
+#ifdef ENABLE_ACTIONS
 	int i, match;
 	struct action_data action_data;
 
@@ -709,6 +719,7 @@ void *eval_frag_actions(struct dir_ent *dir_ent)
 		if (match)
 			return &fragment_spec[i].data;
 	}
+#endif
 
 	return &def_fragment;
 }
@@ -716,12 +727,15 @@ void *eval_frag_actions(struct dir_ent *dir_ent)
 
 void *get_frag_action(void *fragment)
 {
+#ifdef ENABLE_ACTIONS
 	struct action *spec_list_end = &fragment_spec[fragment_count];
 	struct action *action;
+#endif
 
 	if (fragment == NULL)
 		return &def_fragment;
 
+#ifdef ENABLE_ACTIONS
 	if (fragment_count == 0)
 		return NULL;
 
@@ -734,6 +748,9 @@ void *get_frag_action(void *fragment)
 		return NULL;
 
 	return &action->data;
+#else
+	return NULL;
+#endif
 }
 
 
@@ -749,7 +766,10 @@ int exclude_actions()
 int eval_exclude_actions(char *name, char *pathname, char *subpath,
 	struct stat *buf, int depth)
 {
-	int i, match = 0;
+	int match = 0;
+
+#ifdef ENABLE_ACTIONS
+	int i;
 	struct action_data action_data;
 
 	action_data.name = name;
@@ -760,11 +780,13 @@ int eval_exclude_actions(char *name, char *pathname, char *subpath,
 
 	for (i = 0; i < exclude_count && !match; i++)
 		match = eval_expr(exclude_spec[i].expr, &action_data);
+#endif
 
 	return match;
 }
 
 
+#ifdef ENABLE_ACTIONS
 /*
  * Fragment specific action code
  */
@@ -1211,6 +1233,7 @@ static void mode_action(struct action *action, struct dir_ent *dir_ent)
 		}
 	}
 }
+#endif
 
 
 /*
@@ -1222,6 +1245,7 @@ int empty_actions()
 }
 
 
+#ifdef ENABLE_ACTIONS
 static int parse_empty_args(struct action_entry *action, int args,
 					char **argv, void **data)
 {
@@ -1255,11 +1279,14 @@ static int parse_empty_args(struct action_entry *action, int args,
 
 	return 1;
 }
+#endif
 
 
 int eval_empty_actions(struct dir_ent *dir_ent)
 {
-	int i, match = 0;
+	int match = 0;
+#ifdef ENABLE_ACTIONS
+	int i;
 	struct action_data action_data;
 	struct empty_data *data;
 	struct dir_info *dir = dir_ent->dir;
@@ -1299,15 +1326,18 @@ int eval_empty_actions(struct dir_ent *dir_ent)
 		
 		match = eval_expr(empty_spec[i].expr, &action_data);
 	}
+#endif
 
 	return match;
 }
 
 
+#ifdef ENABLE_ACTIONS
 /*
  *  Move specific action code
  */
 static struct move_ent *move_list = NULL;
+#endif
 
 
 int move_actions()
@@ -1316,6 +1346,7 @@ int move_actions()
 }
 
 
+#ifdef ENABLE_ACTIONS
 static char *move_pathname(struct move_ent *move)
 {
 	struct dir_info *dest;
@@ -1501,10 +1532,12 @@ static int subdirectory(struct dir_info *source, struct dir_info *dest)
 		strncmp(source->subpath, dest->subpath,
 		strlen(source->subpath)) == 0;
 }
+#endif
 
 
 void eval_move_actions(struct dir_info *root, struct dir_ent *dir_ent)
 {
+#ifdef ENABLE_ACTIONS
 	int i;
 	struct action_data action_data;
 	struct move_ent *move = NULL;
@@ -1587,9 +1620,11 @@ void eval_move_actions(struct dir_info *root, struct dir_ent *dir_ent)
 		move->next = move_list;
 		move_list = move;
 	}
+#endif
 }
 
 
+#ifdef ENABLE_ACTIONS
 static void move_dir(struct dir_ent *dir_ent)
 {
 	struct dir_info *dir = dir_ent->dir;
@@ -1687,10 +1722,12 @@ static void move_file(struct move_ent *move_ent)
 		 */
 		move_dir(dir_ent);
 }
+#endif
 
 
 void do_move_actions()
 {
+#ifdef ENABLE_ACTIONS
 	while(move_list) {
 		struct move_ent *temp = move_list;
 		struct dir_info *dest = (move_list->ops & ACTION_MOVE_MOVE) ?
@@ -1710,9 +1747,11 @@ void do_move_actions()
 		move_list = move_list->next;
 		free(temp);
 	}
+#endif
 }
 
 
+#ifdef ENABLE_ACTIONS
 /*
  * General test evaluation code
  */
@@ -2321,3 +2360,4 @@ static struct action_entry action_table[] = {
 	{ "move", MOVE_ACTION, -2, ACTION_ALL_LNK, NULL, NULL},
 	{ "", 0, -1, 0, NULL, NULL}
 };
+#endif

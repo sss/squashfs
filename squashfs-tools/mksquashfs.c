@@ -4789,6 +4789,7 @@ int main(int argc, char *argv[])
 	 */
 	comp = lookup_compressor(COMP_DEFAULT);
 	for(; i < argc; i++) {
+#ifdef ENABLE_ACTIONS
 		if(strcmp(argv[i], "-action") == 0 ||
 				strcmp(argv[i], "-a") ==0) {
 			if(++i == argc) {
@@ -4799,7 +4800,6 @@ int main(int argc, char *argv[])
 			res = parse_action(argv[i]);
 			if(res == 0)
 				exit(1);
-
 		} else if(strcmp(argv[i], "-af") == 0) {
 			if(++i == argc) {
 				ERROR("%s: -af missing filename\n", argv[0]);
@@ -4808,7 +4808,9 @@ int main(int argc, char *argv[])
 			if(read_action_file(argv[i]) == FALSE)
 				exit(1);
 
-		} else if(strcmp(argv[i], "-comp") == 0) {
+		} else
+#endif
+		if(strcmp(argv[i], "-comp") == 0) {
 			if(compressor_opts_parsed) {
 				ERROR("%s: -comp must appear before -X options"
 					"\n", argv[0]);
