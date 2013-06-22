@@ -121,6 +121,7 @@ struct test {
 struct cache {
 	int	max_buffers;
 	int	count;
+	int	used;
 	int	buffer_size;
 	int	wait_free;
 	int	wait_pending;
@@ -232,11 +233,17 @@ extern int progress_enabled;
 extern int inode_number;
 extern int lookup_type[];
 extern int fd;
+extern struct queue *to_reader, *to_inflate, *to_writer;
+extern struct cache *fragment_cache, *data_cache;
 
 /* unsquashfs.c */
 extern int lookup_entry(struct hash_table_entry **, long long);
 extern int read_fs_bytes(int fd, long long, int, void *);
 extern int read_block(int, long long, long long *, int, void *);
+extern void enable_progress_bar();
+extern void disable_progress_bar();
+extern void dump_queue(struct queue *);
+extern void dump_cache(struct cache *);
 
 /* unsquash-1.c */
 extern void read_block_list_1(unsigned int *, char *, int);

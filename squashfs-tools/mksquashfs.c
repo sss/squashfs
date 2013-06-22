@@ -283,7 +283,6 @@ struct seq_queue *to_main;
 pthread_t *thread, *deflator_thread, *frag_deflator_thread;
 pthread_t *restore_thread = NULL;
 pthread_mutex_t	fragment_mutex;
-pthread_cond_t fragment_waiting;
 pthread_mutex_t	pos_mutex;
 
 /* user options that control parallelisation */
@@ -4005,7 +4004,7 @@ void initialise_threads(int readb_mbytes, int writeb_mbytes,
 	sigemptyset(&sigmask);
 	sigaddset(&sigmask, SIGQUIT);
 	sigaddset(&sigmask, SIGHUP);
-	if(pthread_sigmask(SIG_BLOCK, &sigmask, &old_mask) == -1)
+	if(pthread_sigmask(SIG_BLOCK, &sigmask, NULL) == -1)
 		BAD_ERROR("Failed to set signal mask in intialise_threads\n");
 
 	/*
@@ -4070,7 +4069,6 @@ void initialise_threads(int readb_mbytes, int writeb_mbytes,
 	init_progress_bar();
 	init_info();
 	pthread_mutex_init(&fragment_mutex, NULL);
-	pthread_cond_init(&fragment_waiting, NULL);
 
 	for(i = 0; i < processors; i++) {
 		if(pthread_create(&deflator_thread[i], NULL, deflator, NULL) !=
@@ -5361,7 +5359,7 @@ printOptions:
 			SQUASHFS_INODE_BLK(sBlk.root_inode),
 			root_inode_offset =
 			SQUASHFS_INODE_OFFSET(sBlk.root_inode);
-		sigset_t sigmask, old_mask;
+		sigset_t sigmask;
 
 		if((bytes = read_filesystem(root_name, fd, &sBlk, &inode_table,
 				&data_cache, &directory_table,
@@ -5437,7 +5435,7 @@ printOptions:
 		sigaddset(&sigmask, SIGINT);
 		sigaddset(&sigmask, SIGTERM);
 		sigaddset(&sigmask, SIGUSR1);
-		if(pthread_sigmask(SIG_BLOCK, &sigmask, &old_mask) == -1)
+		if(pthread_sigmask(SIG_BLOCK, &sigmask, NULL) == -1)
 			BAD_ERROR("Failed to set signal mask\n");
 		write_destination(fd, SQUASHFS_START, 4, "\0\0\0\0");
 

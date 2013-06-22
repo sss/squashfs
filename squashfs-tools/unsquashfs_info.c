@@ -19,7 +19,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
  *
- * info.c
+ * unsquashfs_info.c
  */
 
 #include <pthread.h>
@@ -38,52 +38,30 @@
 #include <string.h>
 
 #include "squashfs_fs.h"
-#include "mksquashfs.h"
+#include "unsquashfs.h"
 #include "error.h"
-#include "progressbar.h"
-#include "caches-queues-lists.h"
 
 static int silent = 0;
-static struct dir_ent *ent = NULL;
+char *pathname = NULL;
 
 pthread_t info_thread;
 
 
 void disable_info()
 {
-	ent = NULL;
+	if(pathname)
+		free(pathname);
+
+	pathname = NULL;
 }
 
 
-void update_info(struct dir_ent *dir_ent)
+void update_info(char *name)
 {
-	ent = dir_ent;
-}
+	if(pathname)
+		free(pathname);
 
-
-void print_filename()
-{
-	int res;
-	char *subpath;
-	struct dir_ent *dir_ent = ent;
-
-	if(dir_ent == NULL)
-		return;
-
-	if(dir_ent->our_dir->subpath[0] != '\0')
-		res = asprintf(&subpath, "%s/%s",
-			dir_ent->our_dir->subpath, dir_ent->name);
-	else
-		res = asprintf(&subpath, "/%s", dir_ent->name);
-
-	if(res < 0) {
-		ERROR("asprintf failed in info_thrd\n");
-		return;
-	}
-
-	INFO("%s\n", subpath);
-
-	free(subpath);
+	pathname = name;
 }
 
 
@@ -91,42 +69,26 @@ void dump_state()
 {
 	disable_progress_bar();
 
-	printf("Queue and Cache status dump\n");
+	printf("Queue and cache status dump\n");
 	printf("===========================\n");
 
-	printf("file buffer queue (reader thread -> deflate thread(s))\n");
-	dump_queue(to_deflate);
+	printf("file buffer read queue (main thread -> reader thread)\n");
+	dump_queue(to_reader);
 
-	printf("uncompressed fragment queue (reader thread -> main"
-						" thread)\n");
-	dump_seq_queue(to_main, 1);
+	printf("file buffer decompress queue (reader thread -> inflate"
+							" thread(s))\n");
+	dump_queue(to_inflate);
 
-	printf("compressed block queue (deflate thread(s) -> main thread)\n");
-	dump_seq_queue(to_main, 0);
-
-	printf("uncompressed packed fragment queue (main thread -> fragment"
-						" deflate thread(s))\n");
-	dump_queue(to_frag);
-
-
-	printf("locked frag queue (compressed frags waiting while multi-block"
-						" file is written)\n");
-	dump_queue(locked_fragment);
-
-	printf("compressed block queue (main & fragment deflate threads(s) ->"
-						" writer thread)\n");
+	printf("file buffer write queue (main thread -> writer thread)\n");
 	dump_queue(to_writer);
 
-	printf("\nread cache (uncompressed blocks read by reader thread)\n");
-	dump_cache(reader_buffer);
+	printf("\nbuffer cache (uncompressed blocks and compressed blocks "
+							"'in flight')\n");
+	dump_cache(data_cache);
 
-	printf("write cache (compressed blocks waiting to be written by the"
-						" writer thread)\n");
-	dump_cache(writer_buffer);
-
-	printf("fragment cache (frags waiting to be compressed by fragment"
-						" deflate thread(s))\n");
-	dump_cache(fragment_buffer);
+	printf("fragment buffer cache (uncompressed frags and compressed"
+						" frags 'in flight')\n");
+	dump_cache(fragment_cache);
 
 	enable_progress_bar();
 }
@@ -165,7 +127,8 @@ void *info_thrd(void *arg)
 		}
 
 		if(sig == SIGQUIT && !waiting) {
-			print_filename();
+			if(pathname)
+				INFO("%s\n", pathname);
 
 			/* set one second interval period, if ^\ received
 			   within then, dump queue and cache status */

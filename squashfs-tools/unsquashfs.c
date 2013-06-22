@@ -28,6 +28,7 @@
 #include "squashfs_compat.h"
 #include "compressor.h"
 #include "xattr.h"
+#include "unsquashfs_info.h"
 #include "stdarg.h"
 
 #include <sys/sysinfo.h>
@@ -38,8 +39,8 @@
 #include <ctype.h>
 
 struct cache *fragment_cache, *data_cache;
-struct queue *to_reader, *to_deflate, *to_writer, *from_writer;
-pthread_t *thread, *deflator_thread;
+struct queue *to_reader, *to_inflate, *to_writer, *from_writer;
+pthread_t *thread, *inflator_thread;
 pthread_mutex_t	fragment_mutex;
 
 /* user options that control parallelisation */
@@ -223,6 +224,21 @@ void *queue_get(struct queue *queue)
 }
 
 
+void dump_queue(struct queue *queue)
+{
+	pthread_mutex_lock(&queue->mutex);
+
+	printf("Max size %d, size %d%s\n", queue->size - 1,  
+		queue->readp <= queue->writep ? queue->writep - queue->readp :
+			queue->size - queue->readp + queue->writep,
+		queue->readp == queue->writep ? " (EMPTY)" :
+			((queue->writep + 1) % queue->size) == queue->readp ?
+			" (FULL)" : "");
+
+	pthread_mutex_unlock(&queue->mutex);
+}
+
+
 /* Called with the cache mutex held */
 void insert_hash_table(struct cache *cache, struct cache_entry *entry)
 {
@@ -297,6 +313,7 @@ struct cache *cache_init(int buffer_size, int max_buffers)
 	cache->max_buffers = max_buffers;
 	cache->buffer_size = buffer_size;
 	cache->count = 0;
+	cache->used = 0;
 	cache->free_list = NULL;
 	memset(cache->hash_table, 0, sizeof(struct cache_entry *) * 65536);
 	cache->wait_free = FALSE;
@@ -313,7 +330,7 @@ struct cache_entry *cache_get(struct cache *cache, long long block, int size)
 {
 	/*
 	 * Get a block out of the cache.  If the block isn't in the cache
- 	 * it is added and queued to the reader() and deflate() threads for
+ 	 * it is added and queued to the reader() and inflate() threads for
  	 * reading off disk and decompression.  The cache grows until max_blocks
  	 * is reached, once this occurs existing discarded blocks on the free
  	 * list are reused
@@ -366,7 +383,11 @@ struct cache_entry *cache_get(struct cache *cache, long long block, int size)
 		}
 
 		/*
-		 * initialise block and insert into the hash table
+		 * Initialise block and insert into the hash table.
+		 * Increment used which tracks how many buffers in the
+		 * cache are actively in use (the other blocks, count - used,
+		 * are in the cache and available for lookup, but can also be
+		 * re-used).
 		 */
 		entry->block = block;
 		entry->size = size;
@@ -374,6 +395,7 @@ struct cache_entry *cache_get(struct cache *cache, long long block, int size)
 		entry->error = FALSE;
 		entry->pending = TRUE;
 		insert_hash_table(cache, entry);
+		cache->used ++;
 
 		/*
 		 * queue to read thread to read and ultimately (via the
@@ -443,6 +465,7 @@ void cache_block_put(struct cache_entry *entry)
 	entry->used --;
 	if(entry->used == 0) {
 		insert_free_list(entry->cache, entry);
+		entry->cache->used --;
 
 		/*
 		 * if the wait_free flag is set, one or more threads may be
@@ -455,6 +478,18 @@ void cache_block_put(struct cache_entry *entry)
 	}
 
 	pthread_mutex_unlock(&entry->cache->mutex);
+}
+
+
+void dump_cache(struct cache *cache)
+{
+	pthread_mutex_lock(&cache->mutex);
+
+	printf("Max buffers %d, Current size %d, Used %d,  %s\n",
+		cache->max_buffers, cache->count, cache->used,
+		cache->free_list ?  "Free buffers" : "No free buffers");
+
+	pthread_mutex_unlock(&cache->mutex);
 }
 
 
@@ -1551,9 +1586,12 @@ void dir_scan(char *parent_name, unsigned int start_block, unsigned int offset,
 		if(res == -1)
 			EXIT_UNSQUASH("asprintf failed in dir_scan\n");
 
-		if(type == SQUASHFS_DIR_TYPE)
+		if(type == SQUASHFS_DIR_TYPE) {
 			dir_scan(pathname, start_block, offset, new);
-		else if(new == NULL) {
+			free(pathname);
+		} else if(new == NULL) {
+			update_info(pathname);
+
 			i = s_ops.read_inode(start_block, offset);
 
 			if(lsonly || info)
@@ -1565,10 +1603,10 @@ void dir_scan(char *parent_name, unsigned int start_block, unsigned int offset,
 			if(i->type == SQUASHFS_SYMLINK_TYPE ||
 					i->type == SQUASHFS_LSYMLINK_TYPE)
 				free(i->symlink);
-		}
+		} else
+			free(pathname);
 
 		free_subdir(new);
-		free(pathname);
 	}
 
 	if(!lsonly)
@@ -1604,7 +1642,7 @@ void squashfs_stat(char *source)
 		printf("Compression %s\n", comp->name);
 
 		if(SQUASHFS_COMP_OPTS(sBlk.s.flags)) {
-			char buffer[SQUASHFS_METADATA_SIZE];
+			char buffer[SQUASHFS_METADATA_SIZE] __attribute__ ((aligned));
 			int bytes;
 
 			bytes = read_block(fd, sizeof(sBlk.s), NULL, 0, buffer);
@@ -1892,10 +1930,10 @@ void *reader(void *arg)
 
 		if(res && SQUASHFS_COMPRESSED_BLOCK(entry->size))
 			/*
-			 * queue successfully read block to the deflate
+			 * queue successfully read block to the inflate
 			 * thread(s) for further processing
  			 */
-			queue_put(to_deflate, entry);
+			queue_put(to_inflate, entry);
 		else
 			/*
 			 * block has either been successfully read and is
@@ -2014,12 +2052,12 @@ void *writer(void *arg)
 /*
  * decompress thread.  This decompresses buffers queued by the read thread
  */
-void *deflator(void *arg)
+void *inflator(void *arg)
 {
 	char tmp[block_size];
 
 	while(1) {
-		struct cache_entry *entry = queue_get(to_deflate);
+		struct cache_entry *entry = queue_get(to_inflate);
 		int error, res;
 
 		res = compressor_uncompress(comp, tmp, entry->data,
@@ -2090,11 +2128,23 @@ void initialise_threads(int fragment_buffer_size, int data_buffer_size)
 	int i, max_files, res;
 	sigset_t sigmask, old_mask;
 
+	/* block SIGQUIT and SIGHUP, these are handled by the info thread */
+	sigemptyset(&sigmask);
+	sigaddset(&sigmask, SIGQUIT);
+	sigaddset(&sigmask, SIGHUP);
+	if(pthread_sigmask(SIG_BLOCK, &sigmask, NULL) == -1)
+		EXIT_UNSQUASH("Failed to set signal mask in initialise_threads"
+			"\n");
+
+	/*
+	 * temporarily block these signals so the created sub-threads will
+	 * ignore them, ensuring the main thread handles them
+	 */
 	sigemptyset(&sigmask);
 	sigaddset(&sigmask, SIGINT);
-	sigaddset(&sigmask, SIGQUIT);
-	if(sigprocmask(SIG_BLOCK, &sigmask, &old_mask) == -1)
-		EXIT_UNSQUASH("Failed to set signal mask in intialise_threads"
+	sigaddset(&sigmask, SIGTERM);
+	if(pthread_sigmask(SIG_BLOCK, &sigmask, &old_mask) == -1)
+		EXIT_UNSQUASH("Failed to set signal mask in initialise_threads"
 			"\n");
 
 	if(processors == -1) {
@@ -2126,14 +2176,14 @@ void initialise_threads(int fragment_buffer_size, int data_buffer_size)
 	thread = malloc((3 + processors) * sizeof(pthread_t));
 	if(thread == NULL)
 		EXIT_UNSQUASH("Out of memory allocating thread descriptors\n");
-	deflator_thread = &thread[3];
+	inflator_thread = &thread[3];
 
 	/*
-	 * dimensioning the to_reader and to_deflate queues.  The size of
+	 * dimensioning the to_reader and to_inflate queues.  The size of
 	 * these queues is directly related to the amount of block
 	 * read-ahead possible.  To_reader queues block read requests to
-	 * the reader thread and to_deflate queues block decompression
-	 * requests to the deflate thread(s) (once the block has been read by
+	 * the reader thread and to_inflate queues block decompression
+	 * requests to the inflate thread(s) (once the block has been read by
 	 * the reader thread).  The amount of read-ahead is determined by
 	 * the combined size of the data_block and fragment caches which
 	 * determine the total number of blocks which can be "in flight"
@@ -2156,7 +2206,7 @@ void initialise_threads(int fragment_buffer_size, int data_buffer_size)
 	 *
 	 * dimensioning the to_writer queue.  The size of this queue is
 	 * directly related to the amount of block read-ahead possible.
-	 * However, unlike the to_reader and to_deflate queues, this is
+	 * However, unlike the to_reader and to_inflate queues, this is
 	 * complicated by the fact the to_writer queue not only contains
 	 * entries for fragments and data_blocks but it also contains
 	 * file entries, one per open file in the read-ahead.
@@ -2190,7 +2240,7 @@ void initialise_threads(int fragment_buffer_size, int data_buffer_size)
 	open_init(max_files);
 
 	/*
-	 * allocate to_reader, to_deflate and to_writer queues.  Set based on
+	 * allocate to_reader, to_inflate and to_writer queues.  Set based on
 	 * open file limit and cache size, unless open file limit is unlimited,
 	 * in which case set purely based on cache limits
 	 *
@@ -2203,7 +2253,7 @@ void initialise_threads(int fragment_buffer_size, int data_buffer_size)
 			EXIT_UNSQUASH("Data queue size is too large\n");
 
 		to_reader = queue_init(max_files + data_buffer_size);
-		to_deflate = queue_init(max_files + data_buffer_size);
+		to_inflate = queue_init(max_files + data_buffer_size);
 		to_writer = queue_init(max_files * 2 + data_buffer_size);
 	} else {
 		int all_buffers_size;
@@ -2219,7 +2269,7 @@ void initialise_threads(int fragment_buffer_size, int data_buffer_size)
 							" too large\n");
 
 		to_reader = queue_init(all_buffers_size);
-		to_deflate = queue_init(all_buffers_size);
+		to_inflate = queue_init(all_buffers_size);
 		to_writer = queue_init(all_buffers_size * 2);
 	}
 
@@ -2230,10 +2280,11 @@ void initialise_threads(int fragment_buffer_size, int data_buffer_size)
 	pthread_create(&thread[0], NULL, reader, NULL);
 	pthread_create(&thread[1], NULL, writer, NULL);
 	pthread_create(&thread[2], NULL, progress_thread, NULL);
+	init_info();
 	pthread_mutex_init(&fragment_mutex, NULL);
 
 	for(i = 0; i < processors; i++) {
-		if(pthread_create(&deflator_thread[i], NULL, deflator, NULL) !=
+		if(pthread_create(&inflator_thread[i], NULL, inflator, NULL) !=
 				 0)
 			EXIT_UNSQUASH("Failed to create thread\n");
 	}
@@ -2241,8 +2292,8 @@ void initialise_threads(int fragment_buffer_size, int data_buffer_size)
 	printf("Parallel unsquashfs: Using %d processor%s\n", processors,
 			processors == 1 ? "" : "s");
 
-	if(sigprocmask(SIG_SETMASK, &old_mask, NULL) == -1)
-		EXIT_UNSQUASH("Failed to set signal mask in intialise_threads"
+	if(pthread_sigmask(SIG_SETMASK, &old_mask, NULL) == -1)
+		EXIT_UNSQUASH("Failed to set signal mask in initialise_threads"
 			"\n");
 }
 
@@ -2250,7 +2301,7 @@ void initialise_threads(int fragment_buffer_size, int data_buffer_size)
 void enable_progress_bar()
 {
 	pthread_mutex_lock(&screen_mutex);
-	progress_enabled = TRUE;
+	progress_enabled = progress;
 	pthread_mutex_unlock(&screen_mutex);
 }
 
@@ -2258,6 +2309,11 @@ void enable_progress_bar()
 void disable_progress_bar()
 {
 	pthread_mutex_lock(&screen_mutex);
+	if(progress_enabled) {
+		progress_bar(sym_count + dev_count + fifo_count + cur_blocks,
+			total_inodes - total_files + total_blocks, columns);
+		printf("\n");
+	}
 	progress_enabled = FALSE;
 	pthread_mutex_unlock(&screen_mutex);
 }
@@ -2379,7 +2435,7 @@ int parse_number(char *arg, int *res)
 
 
 #define VERSION() \
-	printf("unsquashfs version 4.2-git-stable (2013/06/02)\n");\
+	printf("unsquashfs version 4.2-git-stable (2013/06/21)\n");\
 	printf("copyright (C) 2013 Phillip Lougher "\
 		"<phillip@squashfs.org.uk>\n\n");\
     	printf("This program is free software; you can redistribute it and/or"\
@@ -2693,8 +2749,7 @@ options:
 	printf("%d inodes (%d blocks) to write\n\n", total_inodes,
 		total_inodes - total_files + total_blocks);
 
-	if(progress)
-		enable_progress_bar();
+	enable_progress_bar();
 
 	dir_scan(dest, SQUASHFS_INODE_BLK(sBlk.s.root_inode),
 		SQUASHFS_INODE_OFFSET(sBlk.s.root_inode), paths);
@@ -2702,11 +2757,7 @@ options:
 	queue_put(to_writer, NULL);
 	queue_get(from_writer);
 
-	if(progress) {
-		disable_progress_bar();
-		progress_bar(sym_count + dev_count + fifo_count + cur_blocks,
-			total_inodes - total_files + total_blocks, columns);
-	}
+	disable_progress_bar();
 
 	if(!lsonly) {
 		printf("\n");
